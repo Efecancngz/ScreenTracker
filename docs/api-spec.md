@@ -21,9 +21,9 @@ the `offer` SDP, so the host never sends `ice-candidate`. Only the viewer does.
 ## Join rate limiting
 
 The server tracks failed `join-session` attempts per client IP address, in
-memory. The first 3 failures are free (typos happen); each failure after that
+memory. The first 5 failures are free (typos happen); each failure after that
 locks the client out for an exponentially growing backoff (2s, 4s, 8s, ...,
-capped at 60s). An attempt made while locked counts as a failure too, so
+capped at 120s). An attempt made while locked counts as a failure too, so
 ignoring the wait time escalates the lockout rather than resetting it. After
 8 total failures the server closes the connection outright. A successful join
 clears the client's failure count.

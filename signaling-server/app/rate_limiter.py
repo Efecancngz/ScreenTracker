@@ -4,9 +4,9 @@ from collections.abc import Callable
 # The first few failed join attempts are free (typos happen); only sustained
 # guessing gets penalized, and the penalty compounds so a determined guesser
 # slows to a crawl instead of hammering the server at full speed.
-FAILURE_THRESHOLD = 3
+FAILURE_THRESHOLD = 5
 BASE_BACKOFF_SECONDS = 2.0
-MAX_BACKOFF_SECONDS = 60.0
+MAX_BACKOFF_SECONDS = 120.0
 KICK_THRESHOLD = 8
 
 

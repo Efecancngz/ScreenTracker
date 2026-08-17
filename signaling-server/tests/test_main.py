@@ -91,14 +91,14 @@ def test_unparseable_message_is_logged_and_skipped(caplog):
 def test_repeated_failed_joins_escalate_to_rate_limited_then_kicked():
     client = TestClient(app)
     with client.websocket_connect("/ws") as ws:
-        # First FAILURE_THRESHOLD (3) attempts are free — real failure reason,
+        # First FAILURE_THRESHOLD (5) attempts are free — real failure reason,
         # no backoff yet.
-        for _ in range(3):
+        for _ in range(5):
             ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
             response = ws.receive_json()
             assert response == {"type": "session-expired", "reason": "not-found"}
 
-        # 4th attempt trips the lock: still the real reason, but now carries
+        # 6th attempt trips the lock: still the real reason, but now carries
         # a retry_after_seconds.
         ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
         response = ws.receive_json()
@@ -106,20 +106,14 @@ def test_repeated_failed_joins_escalate_to_rate_limited_then_kicked():
         assert response["reason"] == "not-found"
         assert response["retry_after_seconds"] > 0
 
-        # Further attempts while locked are rejected as rate-limited (not
-        # re-checked against the session store), with a growing backoff —
-        # this client is now on failure count 5, 6, 7.
+        # 7th attempt is rejected as rate-limited (not re-checked against the
+        # session store), with a larger backoff than the 6th.
         previous_retry_after = response["retry_after_seconds"]
-        for _ in range(3):
-            ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
-            response = ws.receive_json()
-            assert response == {
-                "type": "session-expired",
-                "reason": "rate-limited",
-                "retry_after_seconds": response["retry_after_seconds"],
-            }
-            assert response["retry_after_seconds"] > previous_retry_after
-            previous_retry_after = response["retry_after_seconds"]
+        ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
+        response = ws.receive_json()
+        assert response["type"] == "session-expired"
+        assert response["reason"] == "rate-limited"
+        assert response["retry_after_seconds"] > previous_retry_after
 
         # 8th failure reaches KICK_THRESHOLD — the server sends the final
         # message and then closes the connection.
