@@ -4,6 +4,7 @@ import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.models import parse_inbound_message
+from app.rate_limiter import RateLimiter
 from app.session_manager import (
     SessionAlreadyClaimedError,
     SessionExpiredError,
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 session_manager = SessionManager()
+rate_limiter = RateLimiter()
 
 # connection_id -> WebSocket, so relayed messages reach the right peer
 _connections: dict[str, WebSocket] = {}
@@ -62,22 +64,49 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 
 async def _handle_join(connection_id: str, session_id: str, websocket: WebSocket) -> None:
+    client_key = _rate_limit_key(websocket)
+
+    # A hammered lock counts as a failure too (and re-locks with a longer
+    # backoff), so a client that ignores the wait time escalates toward
+    # being kicked instead of being allowed to poll the lock for free.
+    if rate_limiter.seconds_until_unlocked(client_key) > 0:
+        await _handle_join_failure(websocket, client_key, "rate-limited")
+        return
+
     try:
         session = session_manager.join_session(session_id, connection_id)
     except SessionNotFoundError:
-        await websocket.send_json({"type": "session-expired", "reason": "not-found"})
+        await _handle_join_failure(websocket, client_key, "not-found")
         return
     except SessionExpiredError:
-        await websocket.send_json({"type": "session-expired", "reason": "expired"})
+        await _handle_join_failure(websocket, client_key, "expired")
         return
     except SessionAlreadyClaimedError:
-        await websocket.send_json({"type": "session-expired", "reason": "already-claimed"})
+        await _handle_join_failure(websocket, client_key, "already-claimed")
         return
 
+    rate_limiter.record_success(client_key)
     _connection_sessions[connection_id] = session_id
     host_ws = _connections.get(session.host_connection_id)
     if host_ws is not None:
         await host_ws.send_json({"type": "peer-joined"})
+
+
+async def _handle_join_failure(websocket: WebSocket, client_key: str, reason: str) -> None:
+    rate_limiter.record_failure(client_key)
+    message: dict[str, str | float] = {"type": "session-expired", "reason": reason}
+    seconds_locked = rate_limiter.seconds_until_unlocked(client_key)
+    if seconds_locked > 0:
+        message["retry_after_seconds"] = round(seconds_locked, 1)
+    await websocket.send_json(message)
+    if rate_limiter.should_kick(client_key):
+        logger.warning("Closing connection from %s after repeated failed join attempts", client_key)
+        await websocket.close()
+
+
+def _rate_limit_key(websocket: WebSocket) -> str:
+    client = websocket.client
+    return client.host if client is not None else "unknown"
 
 
 async def _relay_to_peer(connection_id: str, raw: dict) -> None:

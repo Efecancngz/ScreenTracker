@@ -1,7 +1,8 @@
 import logging
-from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from app.main import app
 
@@ -85,6 +86,68 @@ def test_unparseable_message_is_logged_and_skipped(caplog):
 
     assert "Discarding unparseable message" in caplog.text
     assert "not-a-real-type" in caplog.text
+
+
+def test_repeated_failed_joins_escalate_to_rate_limited_then_kicked():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as ws:
+        # First FAILURE_THRESHOLD (3) attempts are free — real failure reason,
+        # no backoff yet.
+        for _ in range(3):
+            ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
+            response = ws.receive_json()
+            assert response == {"type": "session-expired", "reason": "not-found"}
+
+        # 4th attempt trips the lock: still the real reason, but now carries
+        # a retry_after_seconds.
+        ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
+        response = ws.receive_json()
+        assert response["type"] == "session-expired"
+        assert response["reason"] == "not-found"
+        assert response["retry_after_seconds"] > 0
+
+        # Further attempts while locked are rejected as rate-limited (not
+        # re-checked against the session store), with a growing backoff —
+        # this client is now on failure count 5, 6, 7.
+        previous_retry_after = response["retry_after_seconds"]
+        for _ in range(3):
+            ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
+            response = ws.receive_json()
+            assert response == {
+                "type": "session-expired",
+                "reason": "rate-limited",
+                "retry_after_seconds": response["retry_after_seconds"],
+            }
+            assert response["retry_after_seconds"] > previous_retry_after
+            previous_retry_after = response["retry_after_seconds"]
+
+        # 8th failure reaches KICK_THRESHOLD — the server sends the final
+        # message and then closes the connection.
+        ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
+        response = ws.receive_json()
+        assert response["reason"] == "rate-limited"
+
+        with pytest.raises(WebSocketDisconnect):
+            ws.send_json({"type": "join-session", "session_id": "does-not-exist"})
+            ws.receive_json()
+
+
+def test_successful_join_does_not_count_against_the_rate_limit():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws:
+        host_ws.send_json({"type": "create-session"})
+        session_id = host_ws.receive_json()["session_id"]
+
+        with client.websocket_connect("/ws") as viewer_ws:
+            # A couple of failed guesses first...
+            viewer_ws.send_json({"type": "join-session", "session_id": "wrong-code"})
+            assert viewer_ws.receive_json()["reason"] == "not-found"
+            viewer_ws.send_json({"type": "join-session", "session_id": "wrong-code"})
+            assert viewer_ws.receive_json()["reason"] == "not-found"
+
+            # ...then the real code succeeds and is not rate-limited.
+            viewer_ws.send_json({"type": "join-session", "session_id": session_id})
+            assert host_ws.receive_json()["type"] == "peer-joined"
 
 
 def test_nonwebsocket_exception_still_cleans_up():
