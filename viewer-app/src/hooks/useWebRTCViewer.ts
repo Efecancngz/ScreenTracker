@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface UseWebRTCViewerOptions {
   onIceCandidate: (candidate: RTCIceCandidate) => void;
@@ -28,7 +28,7 @@ export function useWebRTCViewer({
     return () => pc.close();
   }, [onIceCandidate]);
 
-  async function handleOffer(sdp: string): Promise<string> {
+  const handleOffer = useCallback(async (sdp: string): Promise<string> => {
     const pc = pcRef.current;
     if (!pc) throw new Error("Peer connection not ready");
     await pc.setRemoteDescription({ type: "offer", sdp });
@@ -36,11 +36,11 @@ export function useWebRTCViewer({
     await pc.setLocalDescription(answer);
     if (!pc.localDescription) throw new Error("Failed to create local description");
     return pc.localDescription.sdp;
-  }
+  }, []);
 
-  async function handleRemoteIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+  const handleRemoteIceCandidate = useCallback(async (candidate: RTCIceCandidateInit): Promise<void> => {
     await pcRef.current?.addIceCandidate(candidate);
-  }
+  }, []);
 
   return { remoteStream, handleOffer, handleRemoteIceCandidate };
 }
