@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -71,6 +72,19 @@ def test_host_disconnect_notifies_viewer():
             host_ws.close()
             disconnect_notice = viewer_ws.receive_json()
             assert disconnect_notice == {"type": "peer-disconnected"}
+
+
+def test_unparseable_message_is_logged_and_skipped(caplog):
+    client = TestClient(app)
+    with caplog.at_level(logging.WARNING, logger="app.main"):
+        with client.websocket_connect("/ws") as ws:
+            ws.send_json({"type": "not-a-real-type"})
+            # The connection survives: a create-session right after still works
+            ws.send_json({"type": "create-session"})
+            assert ws.receive_json()["type"] == "session-created"
+
+    assert "Discarding unparseable message" in caplog.text
+    assert "not-a-real-type" in caplog.text
 
 
 def test_nonwebsocket_exception_still_cleans_up():

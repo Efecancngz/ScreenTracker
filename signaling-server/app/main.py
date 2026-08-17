@@ -1,3 +1,4 @@
+import logging
 import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -9,6 +10,8 @@ from app.session_manager import (
     SessionManager,
     SessionNotFoundError,
 )
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 session_manager = SessionManager()
@@ -30,7 +33,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             raw = await websocket.receive_json()
             try:
                 message = parse_inbound_message(raw)
-            except ValueError:
+            except ValueError as error:
+                logger.warning(
+                    "Discarding unparseable message from %s: %s (raw=%r)",
+                    connection_id,
+                    error,
+                    raw,
+                )
                 continue
 
             if message.type == "create-session":
@@ -48,6 +57,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except Exception:
         # Catch any other exception (e.g., JSON decode errors, transport exceptions)
         # to ensure cleanup always happens and peer is notified
+        logger.exception("Connection %s failed; cleaning up", connection_id)
         await _handle_disconnect(connection_id)
 
 
