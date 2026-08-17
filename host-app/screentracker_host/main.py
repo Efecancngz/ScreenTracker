@@ -15,20 +15,21 @@ async def run() -> None:
 
     peer_connection = HostPeerConnection()
 
-    async for message in client.messages():
-        if message["type"] == "peer-joined":
-            offer = await peer_connection.create_offer()
-            await client.send({"type": "offer", "sdp": offer.sdp})
-        elif message["type"] == "answer":
-            await peer_connection.set_remote_answer(message["sdp"])
-        elif message["type"] == "ice-candidate":
-            await peer_connection.add_ice_candidate(message["candidate"])
-        elif message["type"] == "peer-disconnected":
-            print("Viewer disconnected.")
-            break
-
-    await peer_connection.close()
-    await client.close()
+    try:
+        async for message in client.messages():
+            if message["type"] == "peer-joined":
+                offer = await peer_connection.create_offer()
+                await client.send({"type": "offer", "sdp": offer.sdp})
+            elif message["type"] == "answer":
+                await peer_connection.set_remote_answer(message["sdp"])
+            elif message["type"] == "ice-candidate":
+                await peer_connection.add_ice_candidate(message["candidate"])
+            elif message["type"] == "peer-disconnected":
+                print("Viewer disconnected.")
+                break
+    finally:
+        await peer_connection.close()
+        await client.close()
 
 
 def main() -> None:
