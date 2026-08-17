@@ -1,4 +1,4 @@
-aiortc==1.9.0
+aiortc==1.10.0
 mss==9.0.2
 numpy==2.1.2
 websockets==13.1
