@@ -1,8 +1,72 @@
+from unittest.mock import AsyncMock
+
 import numpy as np
 import pytest
 
 from screentracker_host.capture import Frame
-from screentracker_host.webrtc_peer import ScreenCaptureTrack, TARGET_FPS
+from aiortc import RTCIceCandidate
+
+from screentracker_host.webrtc_peer import (
+    HostPeerConnection,
+    ScreenCaptureTrack,
+    TARGET_FPS,
+    parse_ice_candidate,
+)
+
+
+VIEWER_CANDIDATE = {
+    "candidate": "candidate:842163049 1 udp 1677729535 203.0.113.9 54321 typ srflx "
+    "raddr 192.168.1.5 rport 54321 generation 0 ufrag Xm1a network-cost 999",
+    "sdpMid": "0",
+    "sdpMLineIndex": 0,
+    "usernameFragment": "Xm1a",
+}
+
+
+def test_parse_ice_candidate_builds_aiortc_candidate_from_browser_payload():
+    candidate = parse_ice_candidate(VIEWER_CANDIDATE)
+
+    assert candidate is not None
+    assert candidate.foundation == "842163049"
+    assert candidate.component == 1
+    assert candidate.protocol == "udp"
+    assert candidate.priority == 1677729535
+    assert candidate.ip == "203.0.113.9"
+    assert candidate.port == 54321
+    assert candidate.type == "srflx"
+    assert candidate.relatedAddress == "192.168.1.5"
+    assert candidate.relatedPort == 54321
+    # Without these, aiortc's addIceCandidate() raises ValueError
+    assert candidate.sdpMid == "0"
+    assert candidate.sdpMLineIndex == 0
+
+
+def test_parse_ice_candidate_returns_none_for_end_of_candidates_marker():
+    assert parse_ice_candidate({"candidate": "", "sdpMid": "0", "sdpMLineIndex": 0}) is None
+
+
+@pytest.mark.asyncio
+async def test_add_ice_candidate_hands_a_parsed_candidate_to_aiortc():
+    peer = HostPeerConnection()
+    peer._pc = AsyncMock()
+
+    await peer.add_ice_candidate(VIEWER_CANDIDATE)
+
+    peer._pc.addIceCandidate.assert_awaited_once()
+    (passed,) = peer._pc.addIceCandidate.await_args.args
+    assert isinstance(passed, RTCIceCandidate)
+    assert passed.ip == "203.0.113.9"
+    assert passed.sdpMid == "0"
+
+
+@pytest.mark.asyncio
+async def test_add_ice_candidate_ignores_end_of_candidates_marker():
+    peer = HostPeerConnection()
+    peer._pc = AsyncMock()
+
+    await peer.add_ice_candidate({"candidate": "", "sdpMid": "0", "sdpMLineIndex": 0})
+
+    peer._pc.addIceCandidate.assert_not_awaited()
 
 
 @pytest.mark.asyncio
