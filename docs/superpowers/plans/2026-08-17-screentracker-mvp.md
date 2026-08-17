@@ -43,9 +43,10 @@ ScreenTracker/
 │   └── tests/{test_capture.py, test_signaling_client.py, test_webrtc_peer.py}
 ├── viewer-app/                        # React/Vite viewer
 │   ├── package.json, vite.config.ts, index.html
-│   ├── src/{App.tsx, main.tsx}
+│   ├── src/{App.tsx, App.module.css, main.tsx}
+│   ├── src/styles/{tokens.css, global.css}
 │   ├── src/hooks/{useSignalingSocket.ts, useWebRTCViewer.ts}
-│   ├── src/components/{SessionJoinForm.tsx, VideoPlayer.tsx}
+│   ├── src/components/{SessionJoinForm.tsx, SessionJoinForm.module.css, VideoPlayer.tsx, VideoPlayer.module.css}
 │   └── tests/{SessionJoinForm.test.tsx, useSignalingSocket.test.ts, VideoPlayer.test.tsx, App.test.tsx}
 └── infra/coturn/{turnserver.conf, README.md}
 ```
@@ -385,6 +386,13 @@ from dataclasses import dataclass, field
 
 SESSION_TTL_SECONDS = 300.0  # 5 minutes to be claimed by a viewer
 
+# 6 characters from a 32-symbol alphabet is ~30 bits of entropy — combined
+# with the 5-minute TTL, guessing a live code is impractical. The alphabet
+# drops 0/O/1/I/L so a code read aloud or hand-typed on a phone can't be
+# misread (matches the viewer's segmented 6-box code input).
+_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+_CODE_LENGTH = 6
+
 
 @dataclass
 class Session:
@@ -408,10 +416,16 @@ class SessionManager:
         self._ttl_seconds = ttl_seconds
 
     def create_session(self, host_connection_id: str) -> Session:
-        session_id = secrets.token_urlsafe(16)
+        session_id = self._generate_unique_code()
         session = Session(session_id=session_id, host_connection_id=host_connection_id)
         self._sessions[session_id] = session
         return session
+
+    def _generate_unique_code(self) -> str:
+        while True:
+            code = "".join(secrets.choice(_CODE_ALPHABET) for _ in range(_CODE_LENGTH))
+            if code not in self._sessions:
+                return code
 
     def join_session(self, session_id: str, viewer_connection_id: str) -> Session:
         session = self._sessions.get(session_id)
@@ -746,7 +760,7 @@ git commit -m "feat: add signaling server WebSocket endpoint"
 
 **Interfaces:**
 - Consumes: `app.main:app` from Task 3.
-- Produces: a runnable container image entry point, consumed only by deployment (manual step in Task 13/14), not by other tasks' code.
+- Produces: a runnable container image entry point, consumed only by deployment (manual step in Task 14/15), not by other tasks' code.
 
 - [ ] **Step 1: Create `signaling-server/Dockerfile`**
 
@@ -1202,7 +1216,7 @@ pytest -v
 
 Manual smoke test only for `main.py` itself — it wires together capture and
 WebRTC, both already unit-tested in isolation; a full run requires a live
-signaling server and a real viewer (see Task 14 in the implementation plan).
+signaling server and a real viewer (see Task 15 in the implementation plan).
 ```
 
 - [ ] **Step 3: Manual smoke test**
@@ -1220,15 +1234,25 @@ git commit -m "feat: add host app CLI entrypoint"
 
 ---
 
-### Task 9: Viewer app — scaffold and session join form
+### Task 9: Viewer app — scaffold and design tokens
 
 **Files:**
 - Create: `viewer-app/` (via `npm create vite@latest`), `viewer-app/package.json`, `viewer-app/vitest.config.ts`
-- Create: `viewer-app/src/components/SessionJoinForm.tsx`
-- Test: `viewer-app/tests/SessionJoinForm.test.tsx`
+- Create: `viewer-app/src/styles/tokens.css`
+- Create: `viewer-app/src/styles/global.css`
+- Modify: `viewer-app/index.html` (font loading)
+- Modify: `viewer-app/src/main.tsx` (import global styles)
 
 **Interfaces:**
-- Produces: `SessionJoinForm({ onJoin: (sessionId: string) => void })` component — consumed by Task 12's `App.tsx`.
+- Produces: CSS custom properties (`--bg`, `--surface`, `--border`, `--text-primary`, `--text-secondary`, `--accent`, `--accent-contrast`, `--font-display`, `--font-body`, `--radius`, `--space-1`…`--space-5`, `--transition-fast`) — consumed by every styled component in Tasks 10–13.
+
+Design direction (approved): dark-first with a light variant following system
+preference, warm near-black/near-white neutrals (not pure black/white or cool
+gray), a single copper/amber accent (not neon, not gradient) evoking an
+instrument-panel indicator light. Display/data text in IBM Plex Mono, body
+text in IBM Plex Sans. No gradients, no glassmorphism, light motion only
+(CSS transitions, no animation library) and `prefers-reduced-motion` is
+respected globally.
 
 - [ ] **Step 1: Scaffold the Vite project**
 
@@ -1241,7 +1265,133 @@ npm install
 npm install -D vitest @testing-library/react @testing-library/user-event @testing-library/jest-dom jsdom
 ```
 
-- [ ] **Step 2: Create `viewer-app/vitest.config.ts`**
+- [ ] **Step 2: Create `viewer-app/src/styles/tokens.css`**
+
+```css
+:root {
+  /* light (default) */
+  --font-display: "IBM Plex Mono", ui-monospace, monospace;
+  --font-body: "IBM Plex Sans", system-ui, sans-serif;
+
+  --bg: #f7f5f1;
+  --surface: #ffffff;
+  --border: #e3e0d9;
+  --text-primary: #17181b;
+  --text-secondary: #6b6a65;
+  --accent: #a85f26;
+  --accent-contrast: #ffffff;
+
+  --radius: 4px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 40px;
+
+  --transition-fast: 120ms ease;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0c0d0f;
+    --surface: #17181b;
+    --border: #2a2c30;
+    --text-primary: #ecead4;
+    --text-secondary: #8c8b86;
+    --accent: #c77d3b;
+    --accent-contrast: #0c0d0f;
+  }
+}
+```
+
+- [ ] **Step 3: Create `viewer-app/src/styles/global.css`**
+
+```css
+@import "./tokens.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+```
+
+- [ ] **Step 4: Load the type family in `viewer-app/index.html`**
+
+Add inside `<head>`, before the closing tag:
+
+```html
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link
+  href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+  rel="stylesheet"
+/>
+```
+
+- [ ] **Step 5: Import global styles in `viewer-app/src/main.tsx`**
+
+Add `import "./styles/global.css";` as the first import in `main.tsx` (alongside the existing Vite template imports).
+
+- [ ] **Step 6: Verify the dev server renders with tokens applied**
+
+Run: `npm run dev` (from `viewer-app/`), open the printed local URL.
+Expected: background/text colors come from the token file (inspect via
+devtools computed styles — `background-color` should resolve to `#f7f5f1` in
+light mode or `#0c0d0f` in dark mode, not the Vite template's defaults).
+
+- [ ] **Step 7: Commit**
+
+```bash
+cd C:/dev/ScreenTracker
+git add viewer-app/package.json viewer-app/package-lock.json viewer-app/index.html viewer-app/src/main.tsx viewer-app/src/styles/tokens.css viewer-app/src/styles/global.css
+git commit -m "feat: add viewer app design tokens and global styles"
+```
+
+---
+
+### Task 10: Viewer app — session join form
+
+**Files:**
+- Create: `viewer-app/src/components/SessionJoinForm.tsx`
+- Create: `viewer-app/src/components/SessionJoinForm.module.css`
+- Test: `viewer-app/tests/SessionJoinForm.test.tsx`
+
+**Interfaces:**
+- Consumes: design tokens from Task 9 (via CSS custom properties, no import needed beyond the global stylesheet already loaded).
+- Produces: `SessionJoinForm({ onJoin: (sessionId: string) => void })` component — consumed by Task 13's `App.tsx`. Emits a 6-character uppercase alphanumeric code, matching the signaling server's `_CODE_LENGTH = 6` (Task 2).
+
+- [ ] **Step 1: Create `viewer-app/vitest.config.ts`**
 
 ```ts
 import { defineConfig } from "vitest/config";
@@ -1257,17 +1407,17 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 3: Create `viewer-app/tests/setup.ts`**
+- [ ] **Step 2: Create `viewer-app/tests/setup.ts`**
 
 ```ts
 import "@testing-library/jest-dom/vitest";
 ```
 
-- [ ] **Step 4: Add a `test` script to `viewer-app/package.json`**
+- [ ] **Step 3: Add a `test` script to `viewer-app/package.json`**
 
 Add to the `"scripts"` block: `"test": "vitest run"`
 
-- [ ] **Step 5: Write the failing test**
+- [ ] **Step 4: Write the failing test**
 
 `viewer-app/tests/SessionJoinForm.test.tsx`:
 
@@ -1278,62 +1428,190 @@ import { describe, expect, it, vi } from "vitest";
 import { SessionJoinForm } from "../src/components/SessionJoinForm";
 
 describe("SessionJoinForm", () => {
-  it("calls onJoin with the trimmed session id on submit", async () => {
+  it("calls onJoin with the assembled code once all six digits are entered", async () => {
     const handleJoin = vi.fn();
     render(<SessionJoinForm onJoin={handleJoin} />);
 
-    await userEvent.type(screen.getByLabelText("Session code"), "  abc123  ");
-    await userEvent.click(screen.getByRole("button", { name: "Join" }));
+    const code = "X7K2M9";
+    for (let i = 0; i < code.length; i++) {
+      await userEvent.type(screen.getByLabelText(`Digit ${i + 1} of 6`), code[i]);
+    }
+    await userEvent.click(screen.getByRole("button", { name: "Connect →" }));
 
-    expect(handleJoin).toHaveBeenCalledWith("abc123");
+    expect(handleJoin).toHaveBeenCalledWith(code);
   });
 
-  it("does not call onJoin when the input is empty", async () => {
-    const handleJoin = vi.fn();
-    render(<SessionJoinForm onJoin={handleJoin} />);
+  it("disables the connect button until all six digits are filled", () => {
+    render(<SessionJoinForm onJoin={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "Connect →" })).toBeDisabled();
+  });
 
-    await userEvent.click(screen.getByRole("button", { name: "Join" }));
-
-    expect(handleJoin).not.toHaveBeenCalled();
+  it("auto-advances focus to the next digit as you type", async () => {
+    render(<SessionJoinForm onJoin={vi.fn()} />);
+    await userEvent.type(screen.getByLabelText("Digit 1 of 6"), "X");
+    expect(screen.getByLabelText("Digit 2 of 6")).toHaveFocus();
   });
 });
 ```
 
-- [ ] **Step 6: Run test to verify it fails**
+- [ ] **Step 5: Run test to verify it fails**
 
 Run (from `viewer-app/`): `npm test`
 Expected: FAIL — `SessionJoinForm` module not found
 
+- [ ] **Step 6: Implement `viewer-app/src/components/SessionJoinForm.module.css`**
+
+The segmented code input is this design's signature element — six boxed
+characters like a boarding-pass stub, active box marked by the accent color
+on the bottom border only (no glow, no glassmorphism blur).
+
+```css
+.form {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-width: 360px;
+  margin: var(--space-5) auto;
+}
+
+.eyebrow {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.digits {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.digit {
+  width: 40px;
+  height: 48px;
+  text-align: center;
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  color: var(--text-primary);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-bottom: 2px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--transition-fast);
+}
+
+.digit:focus {
+  border-bottom-color: var(--accent);
+  outline: none;
+}
+
+.submit {
+  width: 100%;
+  padding: var(--space-3);
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  letter-spacing: 0.04em;
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: opacity var(--transition-fast);
+}
+
+.submit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.submit:not(:disabled):hover {
+  opacity: 0.85;
+}
+
+.caption {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+```
+
 - [ ] **Step 7: Implement `viewer-app/src/components/SessionJoinForm.tsx`**
 
 ```tsx
-import { useState, type FormEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from "react";
+import styles from "./SessionJoinForm.module.css";
+
+const CODE_LENGTH = 6;
 
 interface SessionJoinFormProps {
   onJoin: (sessionId: string) => void;
 }
 
 export function SessionJoinForm({ onJoin }: SessionJoinFormProps) {
-  const [sessionId, setSessionId] = useState("");
+  const [digits, setDigits] = useState<string[]>(Array(CODE_LENGTH).fill(""));
+  const inputRefs = useRef<Array<HTMLInputElement | null>>([]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const trimmed = sessionId.trim();
-    if (trimmed.length > 0) {
-      onJoin(trimmed);
+  function handleChange(index: number, event: ChangeEvent<HTMLInputElement>) {
+    const value = event.target.value.toUpperCase().slice(-1);
+    if (value && !/^[A-Z0-9]$/.test(value)) return;
+
+    const next = [...digits];
+    next[index] = value;
+    setDigits(next);
+
+    if (value && index < CODE_LENGTH - 1) {
+      inputRefs.current[index + 1]?.focus();
     }
   }
 
+  function handleKeyDown(index: number, event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Backspace" && !digits[index] && index > 0) {
+      inputRefs.current[index - 1]?.focus();
+    }
+  }
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const code = digits.join("");
+    if (code.length === CODE_LENGTH) {
+      onJoin(code);
+    }
+  }
+
+  const isComplete = digits.every((digit) => digit.length === 1);
+
   return (
-    <form onSubmit={handleSubmit}>
-      <label htmlFor="session-id-input">Session code</label>
-      <input
-        id="session-id-input"
-        value={sessionId}
-        onChange={(event) => setSessionId(event.target.value)}
-        placeholder="Enter the code shown on your host device"
-      />
-      <button type="submit">Join</button>
+    <form className={styles.form} onSubmit={handleSubmit}>
+      <p className={styles.eyebrow}>Enter session code</p>
+      <div className={styles.digits} role="group" aria-label="Session code">
+        {digits.map((digit, index) => (
+          <input
+            key={index}
+            ref={(el) => {
+              inputRefs.current[index] = el;
+            }}
+            className={styles.digit}
+            value={digit}
+            onChange={(event) => handleChange(index, event)}
+            onKeyDown={(event) => handleKeyDown(index, event)}
+            maxLength={1}
+            inputMode="text"
+            autoCapitalize="characters"
+            aria-label={`Digit ${index + 1} of ${CODE_LENGTH}`}
+          />
+        ))}
+      </div>
+      <button className={styles.submit} type="submit" disabled={!isComplete}>
+        Connect →
+      </button>
+      <p className={styles.caption}>Your code lives on the host device.</p>
     </form>
   );
 }
@@ -1342,26 +1620,26 @@ export function SessionJoinForm({ onJoin }: SessionJoinFormProps) {
 - [ ] **Step 8: Run test to verify it passes**
 
 Run: `npm test`
-Expected: PASS (2 tests)
+Expected: PASS (3 tests)
 
 - [ ] **Step 9: Commit**
 
 ```bash
 cd C:/dev/ScreenTracker
-git add viewer-app/package.json viewer-app/package-lock.json viewer-app/vitest.config.ts viewer-app/tests/setup.ts viewer-app/src/components/SessionJoinForm.tsx viewer-app/tests/SessionJoinForm.test.tsx
-git commit -m "feat: scaffold viewer app and add session join form"
+git add viewer-app/package.json viewer-app/package-lock.json viewer-app/vitest.config.ts viewer-app/tests/setup.ts viewer-app/src/components/SessionJoinForm.tsx viewer-app/src/components/SessionJoinForm.module.css viewer-app/tests/SessionJoinForm.test.tsx
+git commit -m "feat: add segmented session code join form"
 ```
 
 ---
 
-### Task 10: Viewer app — signaling socket hook
+### Task 11: Viewer app — signaling socket hook
 
 **Files:**
 - Create: `viewer-app/src/hooks/useSignalingSocket.ts`
 - Test: `viewer-app/tests/useSignalingSocket.test.ts`
 
 **Interfaces:**
-- Produces: `useSignalingSocket(url: string) -> { isConnected: boolean, lastMessage: SignalingMessage | null, send: (message: SignalingMessage) => void }`, type `SignalingMessage = Record<string, unknown> & { type: string }` — consumed by Task 12's `App.tsx`.
+- Produces: `useSignalingSocket(url: string) -> { isConnected: boolean, lastMessage: SignalingMessage | null, send: (message: SignalingMessage) => void }`, type `SignalingMessage = Record<string, unknown> & { type: string }` — consumed by Task 13's `App.tsx`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1494,19 +1772,20 @@ git commit -m "feat: add viewer app signaling socket hook"
 
 ---
 
-### Task 11: Viewer app — WebRTC viewer hook and video player
+### Task 12: Viewer app — WebRTC viewer hook and video player
 
 **Files:**
 - Create: `viewer-app/src/hooks/useWebRTCViewer.ts`
 - Create: `viewer-app/src/components/VideoPlayer.tsx`
+- Create: `viewer-app/src/components/VideoPlayer.module.css`
 - Test: `viewer-app/tests/VideoPlayer.test.tsx`
 
 **Interfaces:**
-- Produces: `useWebRTCViewer({ onIceCandidate: (candidate: RTCIceCandidate) => void }) -> { remoteStream: MediaStream | null, handleOffer: (sdp: string) => Promise<string>, handleRemoteIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void> }`; `VideoPlayer({ stream: MediaStream | null })` component — both consumed by Task 12's `App.tsx`.
+- Produces: `useWebRTCViewer({ onIceCandidate: (candidate: RTCIceCandidate) => void }) -> { remoteStream: MediaStream | null, handleOffer: (sdp: string) => Promise<string>, handleRemoteIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void> }`; `VideoPlayer({ stream: MediaStream | null })` component — both consumed by Task 13's `App.tsx`.
 
 - [ ] **Step 1: Implement `viewer-app/src/hooks/useWebRTCViewer.ts`**
 
-(No isolated unit test here — it wraps the browser's real `RTCPeerConnection`, which jsdom doesn't implement; it's exercised through `App.test.tsx` in Task 12 with a stub `RTCPeerConnection`.)
+(No isolated unit test here — it wraps the browser's real `RTCPeerConnection`, which jsdom doesn't implement; it's exercised through `App.test.tsx` in Task 13 with a stub `RTCPeerConnection`.)
 
 ```ts
 import { useEffect, useRef, useState } from "react";
@@ -1585,10 +1864,32 @@ describe("VideoPlayer", () => {
 Run (from `viewer-app/`): `npm test`
 Expected: FAIL — `VideoPlayer` module not found
 
-- [ ] **Step 4: Implement `viewer-app/src/components/VideoPlayer.tsx`**
+- [ ] **Step 4: Implement `viewer-app/src/components/VideoPlayer.module.css`**
+
+```css
+.waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+}
+
+.video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: var(--bg);
+}
+```
+
+- [ ] **Step 5: Implement `viewer-app/src/components/VideoPlayer.tsx`**
 
 ```tsx
 import { useEffect, useRef } from "react";
+import styles from "./VideoPlayer.module.css";
 
 interface VideoPlayerProps {
   stream: MediaStream | null;
@@ -1604,36 +1905,37 @@ export function VideoPlayer({ stream }: VideoPlayerProps) {
   }, [stream]);
 
   if (!stream) {
-    return <p>Waiting for host to start streaming…</p>;
+    return <p className={styles.waiting}>Waiting for host to start streaming…</p>;
   }
 
-  return <video ref={videoRef} autoPlay playsInline />;
+  return <video className={styles.video} ref={videoRef} autoPlay playsInline />;
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 6: Run test to verify it passes**
 
 Run: `npm test`
 Expected: PASS (2 tests)
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd C:/dev/ScreenTracker
-git add viewer-app/src/hooks/useWebRTCViewer.ts viewer-app/src/components/VideoPlayer.tsx viewer-app/tests/VideoPlayer.test.tsx
+git add viewer-app/src/hooks/useWebRTCViewer.ts viewer-app/src/components/VideoPlayer.tsx viewer-app/src/components/VideoPlayer.module.css viewer-app/tests/VideoPlayer.test.tsx
 git commit -m "feat: add viewer app WebRTC hook and video player"
 ```
 
 ---
 
-### Task 12: Viewer app — wire up App.tsx with error states
+### Task 13: Viewer app — wire up App.tsx with top bar and error states
 
 **Files:**
 - Modify: `viewer-app/src/App.tsx`
+- Create: `viewer-app/src/App.module.css`
 - Test: `viewer-app/tests/App.test.tsx`
 
 **Interfaces:**
-- Consumes: `SessionJoinForm` (Task 9), `useSignalingSocket`/`SignalingMessage` (Task 10), `useWebRTCViewer` (Task 11), `VideoPlayer` (Task 11).
+- Consumes: `SessionJoinForm` (Task 10), `useSignalingSocket`/`SignalingMessage` (Task 11), `useWebRTCViewer` (Task 12), `VideoPlayer` (Task 12).
 - Produces: `App` component — the viewer app's root, not consumed by any other task.
 
 - [ ] **Step 1: Write the failing test**
@@ -1674,6 +1976,13 @@ class FakeRTCPeerConnection {
   close() {}
 }
 
+async function joinWithCode(code: string) {
+  for (let i = 0; i < code.length; i++) {
+    await userEvent.type(screen.getByLabelText(`Digit ${i + 1} of 6`), code[i]);
+  }
+  await userEvent.click(screen.getByRole("button", { name: "Connect →" }));
+}
+
 beforeEach(() => {
   FakeWebSocket.instances = [];
   vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
@@ -1683,8 +1992,7 @@ beforeEach(() => {
 describe("App", () => {
   it("shows a human-readable error when the session has expired", async () => {
     render(<App />);
-    await userEvent.type(screen.getByLabelText("Session code"), "abc123");
-    await userEvent.click(screen.getByRole("button", { name: "Join" }));
+    await joinWithCode("X7K2M9");
 
     const socket = FakeWebSocket.instances[0];
     act(() => socket.emitMessage({ type: "session-expired", reason: "expired" }));
@@ -1696,8 +2004,7 @@ describe("App", () => {
 
   it("shows a human-readable error when the host disconnects", async () => {
     render(<App />);
-    await userEvent.type(screen.getByLabelText("Session code"), "abc123");
-    await userEvent.click(screen.getByRole("button", { name: "Join" }));
+    await joinWithCode("X7K2M9");
 
     const socket = FakeWebSocket.instances[0];
     act(() => socket.emitMessage({ type: "peer-disconnected" }));
@@ -1712,7 +2019,85 @@ describe("App", () => {
 Run (from `viewer-app/`): `npm test`
 Expected: FAIL — current `App.tsx` (Vite template default) has none of this behavior
 
-- [ ] **Step 3: Implement `viewer-app/src/App.tsx`**
+- [ ] **Step 3: Implement `viewer-app/src/App.module.css`**
+
+Top bar carries the wordmark and a status indicator; the `LIVE` dot is the
+second half of the design's signature moment (segmented code input to get
+in, breathing dot once connected) — a slow opacity pulse, not a glow/blur
+effect, and inert under `prefers-reduced-motion` (handled globally in
+`global.css`).
+
+```css
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  letter-spacing: 0.06em;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.dotLive {
+  background: var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.error {
+  margin-top: var(--space-3);
+  font-size: 0.85rem;
+  color: var(--accent);
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-2);
+}
+```
+
+- [ ] **Step 4: Implement `viewer-app/src/App.tsx`**
 
 ```tsx
 import { useCallback, useEffect, useState } from "react";
@@ -1720,6 +2105,7 @@ import { SessionJoinForm } from "./components/SessionJoinForm";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { useSignalingSocket } from "./hooks/useSignalingSocket";
 import { useWebRTCViewer } from "./hooks/useWebRTCViewer";
+import styles from "./App.module.css";
 
 const SIGNALING_SERVER_URL = import.meta.env.VITE_SIGNALING_SERVER_URL as string;
 
@@ -1776,37 +2162,49 @@ export function App() {
   }
 
   return (
-    <main>
-      <h1>ScreenTracker Viewer</h1>
-      {status !== "streaming" && <SessionJoinForm onJoin={handleJoin} />}
-      {errorMessage && <p role="alert">{errorMessage}</p>}
-      {status === "streaming" && <VideoPlayer stream={remoteStream} />}
-    </main>
+    <div className={styles.shell}>
+      <header className={styles.topBar}>
+        <span className={styles.wordmark}>ScreenTracker</span>
+        <span className={styles.status}>
+          <span className={status === "streaming" ? `${styles.dot} ${styles.dotLive}` : styles.dot} />
+          {status === "streaming" ? "LIVE" : status}
+        </span>
+      </header>
+      <main className={styles.main}>
+        {status !== "streaming" && <SessionJoinForm onJoin={handleJoin} />}
+        {errorMessage && (
+          <p className={styles.error} role="alert">
+            {errorMessage}
+          </p>
+        )}
+        {status === "streaming" && <VideoPlayer stream={remoteStream} />}
+      </main>
+    </div>
   );
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 5: Run test to verify it passes**
 
 Run: `npm test`
 Expected: PASS (2 tests)
 
-- [ ] **Step 5: Run the full viewer test suite**
+- [ ] **Step 6: Run the full viewer test suite**
 
 Run: `npm test`
-Expected: all viewer-app tests (Tasks 9–12) PASS
+Expected: all viewer-app tests (Tasks 10–13) PASS
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd C:/dev/ScreenTracker
-git add viewer-app/src/App.tsx viewer-app/tests/App.test.tsx
-git commit -m "feat: wire up viewer app with session join and error states"
+git add viewer-app/src/App.tsx viewer-app/src/App.module.css viewer-app/tests/App.test.tsx
+git commit -m "feat: wire up viewer app with top bar, session join and error states"
 ```
 
 ---
 
-### Task 13: TURN server infrastructure
+### Task 14: TURN server infrastructure
 
 **Files:**
 - Create: `infra/coturn/turnserver.conf`
@@ -1879,7 +2277,7 @@ git commit -m "chore: add coturn TURN server config and deployment docs"
 
 ---
 
-### Task 14: End-to-end verification and Definition of Done
+### Task 15: End-to-end verification and Definition of Done
 
 **Files:** none created — this task verifies the system built in Tasks 1–13 and updates `HANDOFF.md`.
 
@@ -1945,7 +2343,7 @@ Faz 2 (input kontrolü) için ayrı bir brainstorming/spec turu başlat.
 
 ## Bilinmesi gerekenler
 - TURN sunucusu doğrulaması Trickle ICE testiyle yapıldı, relay candidate alınıyor
-- Uçtan uca WebRTC bağlantısı otomatikleştirilmiş testi yok, manuel doğrulama gerekiyor (bkz. plan Task 14)
+- Uçtan uca WebRTC bağlantısı otomatikleştirilmiş testi yok, manuel doğrulama gerekiyor (bkz. plan Task 15)
 
 ## İlgili dosyalar
 - docs/superpowers/specs/2026-08-17-remote-screen-view-design.md
