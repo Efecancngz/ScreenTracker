@@ -25,3 +25,4 @@ def test_capture_frame_returns_frame_with_expected_shape():
     assert frame.width == 100
     assert frame.height == 50
     assert frame.data.shape == (50, 100, 4)
+    mock_sct.grab.assert_called_once_with({"left": 0, "top": 0, "width": 100, "height": 50})
