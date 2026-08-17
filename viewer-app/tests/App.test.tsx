@@ -85,6 +85,20 @@ describe("App", () => {
     );
   });
 
+  it("shows a human-readable error with the wait time when rate-limited", async () => {
+    render(<App />);
+    await joinWithCode("X7K2M9");
+
+    const socket = FakeWebSocket.instances[0];
+    act(() =>
+      socket.emitMessage({ type: "session-expired", reason: "rate-limited", retry_after_seconds: 4 })
+    );
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Too many attempts. Try again in 4 seconds."
+    );
+  });
+
   it("shows a human-readable error when the host disconnects", async () => {
     render(<App />);
     await joinWithCode("X7K2M9");

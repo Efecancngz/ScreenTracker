@@ -7,12 +7,16 @@ import styles from "./App.module.css";
 
 type ViewerStatus = "idle" | "joining" | "streaming" | "error";
 
-function sessionRejectedMessage(reason: string): string {
+function sessionRejectedMessage(reason: string, retryAfterSeconds?: number): string {
   switch (reason) {
     case "expired":
       return "This session code has expired.";
     case "already-claimed":
       return "This session is already being viewed.";
+    case "rate-limited": {
+      const seconds = Math.ceil(retryAfterSeconds ?? 0);
+      return `Too many attempts. Try again in ${seconds} second${seconds === 1 ? "" : "s"}.`;
+    }
     default:
       return "Session code not found.";
   }
@@ -71,7 +75,12 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
         break;
       case "session-expired":
         setStatus("error");
-        setErrorMessage(sessionRejectedMessage(lastMessage.reason as string));
+        setErrorMessage(
+          sessionRejectedMessage(
+            lastMessage.reason as string,
+            lastMessage.retry_after_seconds as number | undefined
+          )
+        );
         break;
       case "peer-disconnected":
         setStatus("error");
