@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { SessionJoinForm } from "./components/SessionJoinForm";
 import { VideoPlayer } from "./components/VideoPlayer";
 import { useSignalingSocket } from "./hooks/useSignalingSocket";
 import { useWebRTCViewer } from "./hooks/useWebRTCViewer";
+import { clearStoredPairing, getOrCreateDeviceId, getStoredPairing, storePairing } from "./deviceIdentity";
 import styles from "./App.module.css";
 
-type ViewerStatus = "idle" | "joining" | "streaming" | "error";
+type ViewerStatus = "idle" | "authenticating" | "joining" | "streaming" | "error";
 
 function sessionRejectedMessage(reason: string, retryAfterSeconds?: number): string {
   switch (reason) {
@@ -47,7 +48,9 @@ export function App() {
 function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const { send, lastMessage } = useSignalingSocket(signalingServerUrl);
+  const { send, lastMessage, isConnected } = useSignalingSocket(signalingServerUrl);
+  const deviceIdRef = useRef(getOrCreateDeviceId());
+  const attemptedAutoAuthRef = useRef(false);
 
   const handleIceCandidate = useCallback(
     (candidate: RTCIceCandidate) => {
@@ -61,6 +64,20 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
   });
 
   useEffect(() => {
+    if (!isConnected || attemptedAutoAuthRef.current) return;
+    const pairing = getStoredPairing();
+    if (!pairing) return;
+    attemptedAutoAuthRef.current = true;
+    setStatus("authenticating");
+    send({
+      type: "authenticate",
+      host_id: pairing.hostId,
+      device_id: deviceIdRef.current,
+      token: pairing.token,
+    });
+  }, [isConnected, send]);
+
+  useEffect(() => {
     if (!lastMessage) return;
 
     switch (lastMessage.type) {
@@ -72,6 +89,21 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
         break;
       case "ice-candidate":
         void handleRemoteIceCandidate(lastMessage.candidate as RTCIceCandidateInit);
+        break;
+      case "pair-approved":
+        storePairing({
+          hostId: lastMessage.host_id as string,
+          token: lastMessage.token as string,
+        });
+        break;
+      case "pair-rejected":
+        setStatus("error");
+        setErrorMessage("Access denied by host.");
+        break;
+      case "authenticate-failed":
+        clearStoredPairing();
+        attemptedAutoAuthRef.current = false;
+        setStatus("idle");
         break;
       case "session-expired":
         setStatus("error");
@@ -92,8 +124,10 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
   function handleJoin(sessionId: string) {
     setStatus("joining");
     setErrorMessage(null);
-    send({ type: "join-session", session_id: sessionId });
+    send({ type: "join-session", session_id: sessionId, device_id: deviceIdRef.current });
   }
+
+  const showJoinForm = status === "idle" || status === "joining";
 
   return (
     <div className={styles.shell}>
@@ -105,7 +139,8 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
         </span>
       </header>
       <main className={styles.main}>
-        {status !== "streaming" && <SessionJoinForm onJoin={handleJoin} />}
+        {showJoinForm && <SessionJoinForm onJoin={handleJoin} />}
+        {status === "authenticating" && <p className={styles.error}>Connecting with saved access…</p>}
         {errorMessage && (
           <p className={styles.error} role="alert">
             {errorMessage}

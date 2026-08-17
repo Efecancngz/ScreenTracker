@@ -2,6 +2,7 @@ import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
+import { storePairing } from "../src/deviceIdentity";
 
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
@@ -19,6 +20,10 @@ class FakeWebSocket {
   }
 
   close() {}
+
+  emitOpen() {
+    this.onopen?.();
+  }
 
   emitMessage(data: unknown) {
     this.onmessage?.({ data: JSON.stringify(data) });
@@ -40,6 +45,7 @@ async function joinWithCode(code: string) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  localStorage.clear();
   vi.stubEnv("VITE_SIGNALING_SERVER_URL", "ws://localhost:8000/ws");
   vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
   vi.stubGlobal("RTCPeerConnection", FakeRTCPeerConnection as unknown as typeof RTCPeerConnection);
@@ -107,5 +113,52 @@ describe("App", () => {
     act(() => socket.emitMessage({ type: "peer-disconnected" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Host disconnected.");
+  });
+
+  it("auto-authenticates with a stored pairing instead of showing the join form", async () => {
+    storePairing({ hostId: "host-1", token: "tok-1" });
+    render(<App />);
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emitOpen());
+
+    expect(JSON.parse(socket.sent[0])).toMatchObject({
+      type: "authenticate",
+      host_id: "host-1",
+      token: "tok-1",
+    });
+  });
+
+  it("stores the pairing when pair-approved arrives", async () => {
+    render(<App />);
+    await joinWithCode("X7K2M9");
+    const socket = FakeWebSocket.instances[0];
+
+    act(() => socket.emitMessage({ type: "pair-approved", token: "tok-2", host_id: "host-2" }));
+
+    expect(JSON.parse(localStorage.getItem("screentracker_pairing")!)).toEqual({
+      hostId: "host-2",
+      token: "tok-2",
+    });
+  });
+
+  it("shows a human-readable error when pairing is rejected", async () => {
+    render(<App />);
+    await joinWithCode("X7K2M9");
+    const socket = FakeWebSocket.instances[0];
+
+    act(() => socket.emitMessage({ type: "pair-rejected", reason: "denied" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Access denied by host.");
+  });
+
+  it("clears the stored pairing and falls back to the join form on authenticate-failed", async () => {
+    storePairing({ hostId: "host-1", token: "stale-token" });
+    render(<App />);
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emitOpen());
+
+    act(() => socket.emitMessage({ type: "authenticate-failed" }));
+
+    expect(await screen.findByLabelText("Digit 1 of 6")).toBeInTheDocument();
   });
 });
