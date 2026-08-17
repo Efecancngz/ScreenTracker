@@ -172,3 +172,95 @@ def test_nonwebsocket_exception_still_cleans_up():
             # Verify peer gets notification and cleanup happened
             disconnect_notice = viewer_ws.receive_json()
             assert disconnect_notice == {"type": "peer-disconnected"}
+
+
+def test_authenticate_with_valid_token_joins_without_a_code():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws:
+        host_ws.send_json({"type": "register-host", "host_id": "host-abc"})
+        host_ws.send_json({"type": "create-session"})
+        host_ws.receive_json()  # session-created, session_id not needed here
+
+        with client.websocket_connect("/ws") as viewer_ws:
+            viewer_ws.send_json(
+                {
+                    "type": "authenticate",
+                    "host_id": "host-abc",
+                    "device_id": "dev-1",
+                    "token": "tok-1",
+                }
+            )
+            peer_joined = host_ws.receive_json()
+            assert peer_joined["type"] == "peer-joined"
+            assert peer_joined["device_id"] == "dev-1"
+            assert peer_joined["token"] == "tok-1"
+
+
+def test_authenticate_with_unknown_host_id_returns_not_found():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as viewer_ws:
+        viewer_ws.send_json(
+            {
+                "type": "authenticate",
+                "host_id": "no-such-host",
+                "device_id": "dev-1",
+                "token": "tok-1",
+            }
+        )
+        response = viewer_ws.receive_json()
+        assert response == {"type": "session-expired", "reason": "not-found"}
+
+
+def test_join_session_relays_device_id_in_peer_joined():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws, client.websocket_connect("/ws") as viewer_ws:
+        host_ws.send_json({"type": "create-session"})
+        session_id = host_ws.receive_json()["session_id"]
+
+        viewer_ws.send_json(
+            {"type": "join-session", "session_id": session_id, "device_id": "dev-2"}
+        )
+        peer_joined = host_ws.receive_json()
+        assert peer_joined == {"type": "peer-joined", "device_id": "dev-2", "token": None}
+
+
+def test_pair_approved_pair_rejected_and_authenticate_failed_relay_to_viewer():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws, client.websocket_connect("/ws") as viewer_ws:
+        host_ws.send_json({"type": "create-session"})
+        session_id = host_ws.receive_json()["session_id"]
+        viewer_ws.send_json(
+            {"type": "join-session", "session_id": session_id, "device_id": "dev-3"}
+        )
+        host_ws.receive_json()  # peer-joined
+
+        host_ws.send_json({"type": "pair-approved", "token": "tok-9", "host_id": "host-xyz"})
+        assert viewer_ws.receive_json() == {
+            "type": "pair-approved",
+            "token": "tok-9",
+            "host_id": "host-xyz",
+        }
+
+
+def test_release_peer_frees_the_slot_for_a_new_joiner():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws, client.websocket_connect(
+        "/ws"
+    ) as first_viewer_ws, client.websocket_connect("/ws") as second_viewer_ws:
+        host_ws.send_json({"type": "create-session"})
+        session_id = host_ws.receive_json()["session_id"]
+
+        first_viewer_ws.send_json(
+            {"type": "join-session", "session_id": session_id, "device_id": "dev-4"}
+        )
+        host_ws.receive_json()  # peer-joined for the first viewer
+
+        host_ws.send_json({"type": "pair-rejected", "reason": "denied"})
+        assert first_viewer_ws.receive_json() == {"type": "pair-rejected", "reason": "denied"}
+        host_ws.send_json({"type": "release-peer"})
+
+        second_viewer_ws.send_json(
+            {"type": "join-session", "session_id": session_id, "device_id": "dev-5"}
+        )
+        peer_joined = host_ws.receive_json()
+        assert peer_joined == {"type": "peer-joined", "device_id": "dev-5", "token": None}

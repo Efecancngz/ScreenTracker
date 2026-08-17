@@ -72,5 +72,10 @@ class SessionManager:
     def remove_session(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
 
+    def release_viewer(self, session_id: str) -> None:
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.viewer_connection_id = None
+
     def _is_expired(self, session: Session) -> bool:
         return (time.monotonic() - session.created_at) > self._ttl_seconds

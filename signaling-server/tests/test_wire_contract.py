@@ -35,7 +35,7 @@ def test_viewer_ice_candidate_payload_is_relayed_verbatim():
         session_id = host_ws.receive_json()["session_id"]
         # join-session as the viewer sends it: a plain session_id string
         viewer_ws.send_json({"type": "join-session", "session_id": session_id})
-        assert host_ws.receive_json() == {"type": "peer-joined"}
+        assert host_ws.receive_json() == {"type": "peer-joined", "device_id": None, "token": None}
 
         viewer_ws.send_json(VIEWER_ICE_CANDIDATE)
 
@@ -48,7 +48,7 @@ def test_viewer_answer_payload_is_relayed_verbatim():
         host_ws.send_json({"type": "create-session"})
         session_id = host_ws.receive_json()["session_id"]
         viewer_ws.send_json({"type": "join-session", "session_id": session_id})
-        assert host_ws.receive_json() == {"type": "peer-joined"}
+        assert host_ws.receive_json() == {"type": "peer-joined", "device_id": None, "token": None}
 
         viewer_ws.send_json(VIEWER_ANSWER)
 
@@ -65,4 +65,4 @@ def test_viewer_join_session_payload_is_accepted():
 
         viewer_ws.send_json({"type": "join-session", "session_id": created["session_id"]})
 
-        assert host_ws.receive_json() == {"type": "peer-joined"}
+        assert host_ws.receive_json() == {"type": "peer-joined", "device_id": None, "token": None}
