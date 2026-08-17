@@ -15,6 +15,7 @@ class SessionCreatedMessage(BaseModel):
 class JoinSessionMessage(BaseModel):
     type: Literal["join-session"] = "join-session"
     session_id: str
+    device_id: str | None = None
 
 
 class PeerJoinedMessage(BaseModel):
@@ -45,7 +46,49 @@ class PeerDisconnectedMessage(BaseModel):
     type: Literal["peer-disconnected"] = "peer-disconnected"
 
 
-InboundMessage = Union[CreateSessionMessage, JoinSessionMessage, SdpMessage, IceCandidateMessage]
+class RegisterHostMessage(BaseModel):
+    type: Literal["register-host"] = "register-host"
+    host_id: str
+
+
+class AuthenticateMessage(BaseModel):
+    type: Literal["authenticate"] = "authenticate"
+    host_id: str
+    device_id: str
+    token: str
+
+
+class PairApprovedMessage(BaseModel):
+    type: Literal["pair-approved"] = "pair-approved"
+    token: str
+    host_id: str
+
+
+class PairRejectedMessage(BaseModel):
+    type: Literal["pair-rejected"] = "pair-rejected"
+    reason: str
+
+
+class AuthenticateFailedMessage(BaseModel):
+    type: Literal["authenticate-failed"] = "authenticate-failed"
+
+
+class ReleasePeerMessage(BaseModel):
+    type: Literal["release-peer"] = "release-peer"
+
+
+InboundMessage = Union[
+    CreateSessionMessage,
+    JoinSessionMessage,
+    SdpMessage,
+    IceCandidateMessage,
+    RegisterHostMessage,
+    AuthenticateMessage,
+    PairApprovedMessage,
+    PairRejectedMessage,
+    AuthenticateFailedMessage,
+    ReleasePeerMessage,
+]
 
 OutboundMessage = Union[
     SessionCreatedMessage,
@@ -62,6 +105,12 @@ _INBOUND_MODELS: dict[str, type[BaseModel]] = {
     "offer": SdpMessage,
     "answer": SdpMessage,
     "ice-candidate": IceCandidateMessage,
+    "register-host": RegisterHostMessage,
+    "authenticate": AuthenticateMessage,
+    "pair-approved": PairApprovedMessage,
+    "pair-rejected": PairRejectedMessage,
+    "authenticate-failed": AuthenticateFailedMessage,
+    "release-peer": ReleasePeerMessage,
 }
 
 
