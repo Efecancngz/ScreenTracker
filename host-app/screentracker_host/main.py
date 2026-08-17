@@ -61,6 +61,11 @@ async def _handle_peer_joined(
     device_id = message.get("device_id")
     token = message.get("token")
 
+    if not device_id:
+        await client.send({"type": "pair-rejected", "reason": "missing-device-id"})
+        await client.send({"type": "release-peer"})
+        return False
+
     if token is not None:
         if not device_id or not paired_devices.is_paired(device_id, token):
             await client.send({"type": "authenticate-failed"})

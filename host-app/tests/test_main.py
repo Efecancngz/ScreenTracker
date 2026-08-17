@@ -114,3 +114,23 @@ async def test_already_known_device_without_a_token_skips_the_prompt(tmp_path, m
 
     assert streaming is True
     request_approval_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_device_id_is_rejected_without_streaming(tmp_path):
+    paired_devices = PairedDevices(tmp_path / "paired_devices.json")
+    client = AsyncMock()
+    peer_connection = AsyncMock()
+
+    streaming = await _handle_peer_joined(
+        {"device_id": None, "token": None},
+        client=client,
+        peer_connection=peer_connection,
+        paired_devices=paired_devices,
+        host_id="host-1",
+    )
+
+    assert streaming is False
+    client.send.assert_any_await({"type": "pair-rejected", "reason": "missing-device-id"})
+    client.send.assert_any_await({"type": "release-peer"})
+    peer_connection.create_offer.assert_not_awaited()
