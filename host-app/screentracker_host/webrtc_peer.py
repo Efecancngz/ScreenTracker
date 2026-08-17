@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import fractions
+import time
 
 import numpy as np
 from aiortc import RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
@@ -20,14 +22,25 @@ class ScreenCaptureTrack(VideoStreamTrack):
         super().__init__()
         self._monitor_index = monitor_index
         self._pts = 0
+        self._next_frame_time = time.monotonic()
 
     async def recv(self) -> VideoFrame:
+        # Pace frames to TARGET_FPS by sleeping until the next frame time
+        now = time.monotonic()
+        time_to_sleep = self._next_frame_time - now
+        if time_to_sleep > 0:
+            await asyncio.sleep(time_to_sleep)
+
         frame = capture_frame(self._monitor_index)
         rgb = frame.data[:, :, :3][:, :, ::-1]  # BGRA -> RGB
         video_frame = VideoFrame.from_ndarray(np.ascontiguousarray(rgb), format="rgb24")
         video_frame.pts = self._pts
         video_frame.time_base = VIDEO_TIME_BASE
         self._pts += _PTS_STEP
+
+        # Schedule next frame to maintain TARGET_FPS
+        self._next_frame_time += 1 / TARGET_FPS
+
         return video_frame
 
 
