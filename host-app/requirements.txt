@@ -1,0 +1,7 @@
+aiortc==1.9.0
+mss==9.0.2
+numpy==2.1.2
+websockets==13.1
+av==13.1.0
+pytest==8.3.3
+pytest-asyncio==0.24.0
