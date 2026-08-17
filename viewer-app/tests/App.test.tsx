@@ -57,6 +57,18 @@ describe("App", () => {
     );
   });
 
+  it("shows a human-readable error when the session is already claimed", async () => {
+    render(<App />);
+    await joinWithCode("X7K2M9");
+
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emitMessage({ type: "session-expired", reason: "already-claimed" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This session is already being viewed."
+    );
+  });
+
   it("shows a human-readable error when the host disconnects", async () => {
     render(<App />);
     await joinWithCode("X7K2M9");

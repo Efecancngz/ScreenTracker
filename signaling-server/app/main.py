@@ -3,7 +3,12 @@ import uuid
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from app.models import parse_inbound_message
-from app.session_manager import SessionExpiredError, SessionManager, SessionNotFoundError
+from app.session_manager import (
+    SessionAlreadyClaimedError,
+    SessionExpiredError,
+    SessionManager,
+    SessionNotFoundError,
+)
 
 app = FastAPI()
 session_manager = SessionManager()
@@ -54,6 +59,9 @@ async def _handle_join(connection_id: str, session_id: str, websocket: WebSocket
         return
     except SessionExpiredError:
         await websocket.send_json({"type": "session-expired", "reason": "expired"})
+        return
+    except SessionAlreadyClaimedError:
+        await websocket.send_json({"type": "session-expired", "reason": "already-claimed"})
         return
 
     _connection_sessions[connection_id] = session_id

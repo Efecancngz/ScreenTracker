@@ -12,7 +12,7 @@ Single endpoint: `ws://<signaling-host>/ws`. All messages are JSON objects with 
 | `offer` | Host → Server → Viewer | `sdp: string` |
 | `answer` | Viewer → Server → Host | `sdp: string` |
 | `ice-candidate` | Viewer → Server → Host (relayed) | `candidate: object` — the browser's `RTCIceCandidateInit` verbatim: `{candidate, sdpMid, sdpMLineIndex, usernameFragment}` |
-| `session-expired` | Server → Viewer | `reason: "not-found" \| "expired"` |
+| `session-expired` | Server → Viewer | `reason: "not-found" \| "expired" \| "already-claimed"` |
 | `peer-disconnected` | Server → remaining peer | — |
 
 The host (aiortc) does not trickle ICE: every host candidate is already carried in

@@ -34,6 +34,30 @@ def test_join_nonexistent_session_returns_session_expired():
         assert response == {"type": "session-expired", "reason": "not-found"}
 
 
+def test_second_joiner_is_rejected_and_first_viewer_keeps_streaming():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws, client.websocket_connect(
+        "/ws"
+    ) as viewer_ws, client.websocket_connect("/ws") as intruder_ws:
+        host_ws.send_json({"type": "create-session"})
+        session_id = host_ws.receive_json()["session_id"]
+
+        viewer_ws.send_json({"type": "join-session", "session_id": session_id})
+        assert host_ws.receive_json()["type"] == "peer-joined"
+
+        intruder_ws.send_json({"type": "join-session", "session_id": session_id})
+        assert intruder_ws.receive_json() == {
+            "type": "session-expired",
+            "reason": "already-claimed",
+        }
+
+        # The original viewer still owns the relay path
+        host_ws.send_json({"type": "offer", "sdp": "v=0..."})
+        assert viewer_ws.receive_json() == {"type": "offer", "sdp": "v=0..."}
+        viewer_ws.send_json({"type": "answer", "sdp": "v=0..."})
+        assert host_ws.receive_json() == {"type": "answer", "sdp": "v=0..."}
+
+
 def test_host_disconnect_notifies_viewer():
     client = TestClient(app)
     with client.websocket_connect("/ws") as host_ws:

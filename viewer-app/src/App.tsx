@@ -9,6 +9,17 @@ const SIGNALING_SERVER_URL = import.meta.env.VITE_SIGNALING_SERVER_URL as string
 
 type ViewerStatus = "idle" | "joining" | "streaming" | "error";
 
+function sessionRejectedMessage(reason: string): string {
+  switch (reason) {
+    case "expired":
+      return "This session code has expired.";
+    case "already-claimed":
+      return "This session is already being viewed.";
+    default:
+      return "Session code not found.";
+  }
+}
+
 export function App() {
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -40,11 +51,7 @@ export function App() {
         break;
       case "session-expired":
         setStatus("error");
-        setErrorMessage(
-          lastMessage.reason === "expired"
-            ? "This session code has expired."
-            : "Session code not found."
-        );
+        setErrorMessage(sessionRejectedMessage(lastMessage.reason as string));
         break;
       case "peer-disconnected":
         setStatus("error");

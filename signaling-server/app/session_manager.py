@@ -28,6 +28,10 @@ class SessionExpiredError(Exception):
     pass
 
 
+class SessionAlreadyClaimedError(Exception):
+    pass
+
+
 class SessionManager:
     def __init__(self, ttl_seconds: float = SESSION_TTL_SECONDS) -> None:
         self._sessions: dict[str, Session] = {}
@@ -49,7 +53,14 @@ class SessionManager:
         session = self._sessions.get(session_id)
         if session is None:
             raise SessionNotFoundError(session_id)
-        if session.viewer_connection_id is None and self._is_expired(session):
+        if session.viewer_connection_id is not None:
+            # A claimed session is never handed to a second viewer: silently
+            # overwriting would kick the first viewer off with no notice. It
+            # also stops expiring — the host's disconnect cleans it up.
+            if session.viewer_connection_id == viewer_connection_id:
+                return session
+            raise SessionAlreadyClaimedError(session_id)
+        if self._is_expired(session):
             del self._sessions[session_id]
             raise SessionExpiredError(session_id)
         session.viewer_connection_id = viewer_connection_id
