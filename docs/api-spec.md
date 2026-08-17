@@ -11,6 +11,9 @@ Single endpoint: `ws://<signaling-host>/ws`. All messages are JSON objects with 
 | `peer-joined` | Server → Host | — |
 | `offer` | Host → Server → Viewer | `sdp: string` |
 | `answer` | Viewer → Server → Host | `sdp: string` |
-| `ice-candidate` | either direction, relayed | `candidate: string`, `sdp_mid?: string`, `sdp_mline_index?: number` |
+| `ice-candidate` | Viewer → Server → Host (relayed) | `candidate: object` — the browser's `RTCIceCandidateInit` verbatim: `{candidate, sdpMid, sdpMLineIndex, usernameFragment}` |
 | `session-expired` | Server → Viewer | `reason: "not-found" \| "expired"` |
 | `peer-disconnected` | Server → remaining peer | — |
+
+The host (aiortc) does not trickle ICE: every host candidate is already carried in
+the `offer` SDP, so the host never sends `ice-candidate`. Only the viewer does.

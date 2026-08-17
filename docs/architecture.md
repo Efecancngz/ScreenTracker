@@ -28,13 +28,12 @@ sequenceDiagram
     S-->>H: session_id (link/kod)
     V->>S: join-session(session_id)
     S-->>H: peer-joined
-    H->>S: offer (SDP)
+    Note over H: aiortc trickle ICE yapmaz — host adayları offer SDP'sinin içinde gider
+    H->>S: offer (SDP + host ICE adayları)
     S-->>V: offer (SDP)
     V->>S: answer (SDP)
     S-->>H: answer (SDP)
-    H->>S: ice-candidate
-    S-->>V: ice-candidate
-    V->>S: ice-candidate
+    V->>S: ice-candidate (trickle)
     S-->>H: ice-candidate
     Note over H,V: ICE tamamlanınca medya doğrudan veya TURN üzerinden akar
     H-->>V: video stream (WebRTC media)

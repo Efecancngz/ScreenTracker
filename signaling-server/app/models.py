@@ -1,4 +1,4 @@
-from typing import Literal, Union
+from typing import Any, Literal, Union
 
 from pydantic import BaseModel
 
@@ -28,9 +28,12 @@ class SdpMessage(BaseModel):
 
 class IceCandidateMessage(BaseModel):
     type: Literal["ice-candidate"] = "ice-candidate"
-    candidate: str
-    sdp_mid: str | None = None
-    sdp_mline_index: int | None = None
+    # The browser sends RTCIceCandidate.toJSON() verbatim, i.e. an
+    # RTCIceCandidateInit object: {candidate, sdpMid, sdpMLineIndex,
+    # usernameFragment}. The server never inspects it — it only relays the raw
+    # message to the peer — so an untyped mapping keeps the contract honest
+    # without duplicating the browser's schema here.
+    candidate: dict[str, Any]
 
 
 class SessionExpiredMessage(BaseModel):
