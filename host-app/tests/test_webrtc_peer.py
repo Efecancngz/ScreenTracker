@@ -8,8 +8,10 @@ from aiortc import RTCIceCandidate
 
 from screentracker_host.webrtc_peer import (
     HostPeerConnection,
+    STUN_SERVER_URL,
     ScreenCaptureTrack,
     TARGET_FPS,
+    build_ice_servers,
     parse_ice_candidate,
 )
 
@@ -21,6 +23,30 @@ VIEWER_CANDIDATE = {
     "sdpMLineIndex": 0,
     "usernameFragment": "Xm1a",
 }
+
+
+def test_build_ice_servers_falls_back_to_stun_only(monkeypatch):
+    for name in ("TURN_SERVER_URL", "TURN_USERNAME", "TURN_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
+
+    ice_servers = build_ice_servers()
+
+    assert [server.urls for server in ice_servers] == [STUN_SERVER_URL]
+
+
+def test_build_ice_servers_appends_turn_when_configured(monkeypatch):
+    monkeypatch.setenv("TURN_SERVER_URL", "turn:turn.example.com:3478")
+    monkeypatch.setenv("TURN_USERNAME", "screentracker")
+    monkeypatch.setenv("TURN_PASSWORD", "s3cret")
+
+    ice_servers = build_ice_servers()
+
+    assert [server.urls for server in ice_servers] == [
+        STUN_SERVER_URL,
+        "turn:turn.example.com:3478",
+    ]
+    assert ice_servers[1].username == "screentracker"
+    assert ice_servers[1].credential == "s3cret"
 
 
 def test_parse_ice_candidate_builds_aiortc_candidate_from_browser_payload():

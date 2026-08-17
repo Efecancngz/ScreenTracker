@@ -2,16 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import fractions
+import os
 import time
 
 from typing import Any
 
 import numpy as np
-from aiortc import RTCIceCandidate, RTCPeerConnection, RTCSessionDescription, VideoStreamTrack
+from aiortc import (
+    RTCConfiguration,
+    RTCIceCandidate,
+    RTCIceServer,
+    RTCPeerConnection,
+    RTCSessionDescription,
+    VideoStreamTrack,
+)
 from aiortc.sdp import candidate_from_sdp
 from av import VideoFrame
 
 from screentracker_host.capture import capture_frame
+
+# A public STUN server is enough for most NATs; TURN is the relay fallback for
+# the symmetric-NAT cases where no direct path can be found.
+STUN_SERVER_URL = "stun:stun.l.google.com:19302"
 
 VIDEO_TIME_BASE = fractions.Fraction(1, 90000)
 TARGET_FPS = 15
@@ -47,6 +59,21 @@ class ScreenCaptureTrack(VideoStreamTrack):
         return video_frame
 
 
+def build_ice_servers() -> list[RTCIceServer]:
+    """STUN baseline plus the optional self-hosted TURN relay from the env."""
+    ice_servers = [RTCIceServer(urls=STUN_SERVER_URL)]
+
+    turn_url = os.environ.get("TURN_SERVER_URL")
+    turn_username = os.environ.get("TURN_USERNAME")
+    turn_password = os.environ.get("TURN_PASSWORD")
+    if turn_url and turn_username and turn_password:
+        ice_servers.append(
+            RTCIceServer(urls=turn_url, username=turn_username, credential=turn_password)
+        )
+
+    return ice_servers
+
+
 def parse_ice_candidate(candidate_init: dict[str, Any]) -> RTCIceCandidate | None:
     """
     Turn a browser `RTCIceCandidateInit` dict into an aiortc `RTCIceCandidate`.
@@ -70,7 +97,7 @@ def parse_ice_candidate(candidate_init: dict[str, Any]) -> RTCIceCandidate | Non
 
 class HostPeerConnection:
     def __init__(self) -> None:
-        self._pc = RTCPeerConnection()
+        self._pc = RTCPeerConnection(RTCConfiguration(iceServers=build_ice_servers()))
         self._pc.addTrack(ScreenCaptureTrack())
 
     async def create_offer(self) -> RTCSessionDescription:

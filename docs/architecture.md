@@ -44,3 +44,4 @@ sequenceDiagram
 - **Native host app, not browser-based**: keeping the host process persistent (no browser tab dependency) and ready for Phase 2 OS-level input injection outweighed the simplicity of a pure browser-to-browser WebRTC app. See design spec for the rejected alternatives (pure-browser, Electron, from-scratch transport).
 - **`aiortc` + `mss` over a from-scratch capture/encode pipeline**: WebRTC transport is a solved problem; only the signaling protocol is hand-rolled.
 - **In-memory session store, no database**: Phase 1 has no requirement that survives a signaling server restart.
+- **Public Google STUN as the baseline ICE server**: both peers always use `stun:stun.l.google.com:19302`, and the self-hosted coturn TURN relay is layered on top only when the `TURN_*` / `VITE_TURN_*` env vars are set — so same-network and cone-NAT setups work with no TURN deployment at all.
