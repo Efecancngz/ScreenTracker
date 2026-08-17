@@ -833,7 +833,7 @@ git commit -m "chore: add signaling server Dockerfile and README"
 - [ ] **Step 1: Create `host-app/requirements.txt`**
 
 ```
-aiortc==1.9.0
+aiortc==1.10.0
 mss==9.0.2
 numpy==2.1.2
 websockets==13.1
@@ -841,6 +841,10 @@ av==13.1.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
 ```
+
+(`aiortc==1.10.0` requires `av<14.0.0,>=9.0.0`, which `av==13.1.0` satisfies —
+`aiortc==1.9.0` requires `av<13.0.0` and would make this file uninstallable.
+Verified against PyPI package metadata.)
 
 - [ ] **Step 2: Write the failing test**
 
