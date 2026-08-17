@@ -1,0 +1,67 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: 0.9rem;
+  letter-spacing: 0.06em;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+
+.dotLive {
+  background: var(--accent);
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.error {
+  margin-top: var(--space-3);
+  font-size: 0.85rem;
+  color: var(--accent);
+  border-left: 2px solid var(--accent);
+  padding-left: var(--space-2);
+}
