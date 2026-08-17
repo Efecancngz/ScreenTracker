@@ -40,6 +40,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await _relay_to_peer(connection_id, raw)
     except WebSocketDisconnect:
         await _handle_disconnect(connection_id)
+    except Exception:
+        # Catch any other exception (e.g., JSON decode errors, transport exceptions)
+        # to ensure cleanup always happens and peer is notified
+        await _handle_disconnect(connection_id)
 
 
 async def _handle_join(connection_id: str, session_id: str, websocket: WebSocket) -> None:
