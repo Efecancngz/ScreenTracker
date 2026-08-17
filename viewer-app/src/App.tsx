@@ -5,8 +5,6 @@ import { useSignalingSocket } from "./hooks/useSignalingSocket";
 import { useWebRTCViewer } from "./hooks/useWebRTCViewer";
 import styles from "./App.module.css";
 
-const SIGNALING_SERVER_URL = import.meta.env.VITE_SIGNALING_SERVER_URL as string;
-
 type ViewerStatus = "idle" | "joining" | "streaming" | "error";
 
 function sessionRejectedMessage(reason: string): string {
@@ -21,9 +19,31 @@ function sessionRejectedMessage(reason: string): string {
 }
 
 export function App() {
+  const signalingServerUrl = import.meta.env.VITE_SIGNALING_SERVER_URL as string | undefined;
+
+  if (!signalingServerUrl) {
+    return (
+      <div className={styles.shell}>
+        <header className={styles.topBar}>
+          <span className={styles.wordmark}>ScreenTracker</span>
+        </header>
+        <main className={styles.main}>
+          <p className={styles.error} role="alert">
+            Configuration error: VITE_SIGNALING_SERVER_URL is not set. Copy .env.example to
+            .env in the repository root and restart the dev server.
+          </p>
+        </main>
+      </div>
+    );
+  }
+
+  return <Viewer signalingServerUrl={signalingServerUrl} />;
+}
+
+function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const { send, lastMessage } = useSignalingSocket(SIGNALING_SERVER_URL);
+  const { send, lastMessage } = useSignalingSocket(signalingServerUrl);
 
   const handleIceCandidate = useCallback(
     (candidate: RTCIceCandidate) => {

@@ -1,6 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
 
 class FakeWebSocket {
@@ -40,11 +40,27 @@ async function joinWithCode(code: string) {
 
 beforeEach(() => {
   FakeWebSocket.instances = [];
+  vi.stubEnv("VITE_SIGNALING_SERVER_URL", "ws://localhost:8000/ws");
   vi.stubGlobal("WebSocket", FakeWebSocket as unknown as typeof WebSocket);
   vi.stubGlobal("RTCPeerConnection", FakeRTCPeerConnection as unknown as typeof RTCPeerConnection);
 });
 
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
+
 describe("App", () => {
+  it("shows a configuration error and opens no socket when the signaling URL is unset", () => {
+    vi.stubEnv("VITE_SIGNALING_SERVER_URL", "");
+
+    render(<App />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "VITE_SIGNALING_SERVER_URL is not set"
+    );
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
   it("shows a human-readable error when the session has expired", async () => {
     render(<App />);
     await joinWithCode("X7K2M9");
