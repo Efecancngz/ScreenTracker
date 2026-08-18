@@ -4,13 +4,13 @@ import { VideoPlayer } from "../src/components/VideoPlayer";
 
 describe("VideoPlayer", () => {
   it("shows a waiting message when there is no stream", () => {
-    render(<VideoPlayer stream={null} />);
+    render(<VideoPlayer stream={null} inputChannel={null} />);
     expect(screen.getByText(/waiting for host/i)).toBeInTheDocument();
   });
 
   it("renders a video element bound to the stream when present", () => {
     const fakeStream = {} as MediaStream;
-    const { container } = render(<VideoPlayer stream={fakeStream} />);
+    const { container } = render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
     expect(container.querySelector("video")).not.toBeNull();
   });
 });

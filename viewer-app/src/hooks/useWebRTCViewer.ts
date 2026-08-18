@@ -25,6 +25,7 @@ interface UseWebRTCViewerResult {
   remoteStream: MediaStream | null;
   handleOffer: (sdp: string) => Promise<string>;
   handleRemoteIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void>;
+  inputChannel: RTCDataChannel | null;
 }
 
 export function useWebRTCViewer({
@@ -32,6 +33,7 @@ export function useWebRTCViewer({
 }: UseWebRTCViewerOptions): UseWebRTCViewerResult {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [inputChannel, setInputChannel] = useState<RTCDataChannel | null>(null);
 
   useEffect(() => {
     const pc = new RTCPeerConnection({ iceServers: buildIceServers() });
@@ -41,6 +43,7 @@ export function useWebRTCViewer({
     pc.onicecandidate = (event) => {
       if (event.candidate) onIceCandidate(event.candidate);
     };
+    pc.ondatachannel = (event) => setInputChannel(event.channel);
 
     return () => pc.close();
   }, [onIceCandidate]);
@@ -59,5 +62,5 @@ export function useWebRTCViewer({
     await pcRef.current?.addIceCandidate(candidate);
   }, []);
 
-  return { remoteStream, handleOffer, handleRemoteIceCandidate };
+  return { remoteStream, handleOffer, handleRemoteIceCandidate, inputChannel };
 }
