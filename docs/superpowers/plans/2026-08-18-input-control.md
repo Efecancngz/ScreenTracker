@@ -453,7 +453,13 @@ git commit -m "feat: add InputInjector wrapping pynput for mouse/keyboard/scroll
 
 - [ ] **Step 1: Write the failing tests**
 
-`host-app/tests/test_webrtc_peer.py`'nin başına ekle:
+`host-app/tests/test_webrtc_peer.py`'nin başındaki `from unittest.mock import AsyncMock` satırını şu şekilde değiştir:
+
+```python
+from unittest.mock import AsyncMock, MagicMock
+```
+
+ve importların başına ekle:
 
 ```python
 import json
@@ -821,6 +827,11 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
 
     function handlePointerDown(event: PointerEvent) {
       event.preventDefault();
+      // Without capture, releasing the pointer outside the video's bounds
+      // (e.g. dragging off the edge) never fires pointerup on this element,
+      // leaving the mouse button stuck "down" on the host forever. Optional
+      // chaining because jsdom's test environment doesn't implement this.
+      video!.setPointerCapture?.(event.pointerId);
       const { x, y } = toNormalized(event.clientX, event.clientY);
       downAt = { x, y, clientX: event.clientX, clientY: event.clientY };
       activeButton = null;
@@ -849,6 +860,7 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
     }
 
     function handlePointerUp(event: PointerEvent) {
+      video!.releasePointerCapture?.(event.pointerId);
       if (longPressTimer) clearTimeout(longPressTimer);
       if (!downAt) return;
       const { x, y } = toNormalized(event.clientX, event.clientY);
@@ -1080,7 +1092,26 @@ ve
 
 - [ ] **Step 5: Mevcut testleri güncelle**
 
-`viewer-app/tests/VideoPlayer.test.tsx`'i oku ve her `render(<VideoPlayer stream={...} />)` çağrısına `inputChannel={null}` prop'unu ekle (TypeScript derlemesi bunu zorunlu kılar).
+`viewer-app/tests/VideoPlayer.test.tsx`'in tamamını şu içerikle değiştir (yeni zorunlu `inputChannel` prop'u her iki `render` çağrısına eklendi):
+
+```typescript
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import { VideoPlayer } from "../src/components/VideoPlayer";
+
+describe("VideoPlayer", () => {
+  it("shows a waiting message when there is no stream", () => {
+    render(<VideoPlayer stream={null} inputChannel={null} />);
+    expect(screen.getByText(/waiting for host/i)).toBeInTheDocument();
+  });
+
+  it("renders a video element bound to the stream when present", () => {
+    const fakeStream = {} as MediaStream;
+    const { container } = render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
+    expect(container.querySelector("video")).not.toBeNull();
+  });
+});
+```
 
 - [ ] **Step 6: Build ve testleri çalıştır**
 
