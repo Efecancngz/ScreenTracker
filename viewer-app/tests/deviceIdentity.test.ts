@@ -16,6 +16,24 @@ describe("getOrCreateDeviceId", () => {
     expect(id).toBeTruthy();
     expect(getOrCreateDeviceId()).toBe(id);
   });
+
+  it("still creates a device id when crypto.randomUUID is unavailable", () => {
+    // crypto.randomUUID only exists in secure contexts (HTTPS or localhost).
+    // Opening the viewer over plain HTTP via a LAN IP — the normal way to
+    // reach it from a phone during local testing — is not a secure context,
+    // so the browser omits randomUUID entirely.
+    const original = crypto.randomUUID;
+    // @ts-expect-error - simulating a browser without this API (assignment,
+    // not delete: randomUUID lives on the prototype, so delete is a no-op)
+    crypto.randomUUID = undefined;
+    try {
+      const id = getOrCreateDeviceId();
+      expect(id).toBeTruthy();
+      expect(getOrCreateDeviceId()).toBe(id);
+    } finally {
+      crypto.randomUUID = original;
+    }
+  });
 });
 
 describe("stored pairing", () => {
