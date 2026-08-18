@@ -28,6 +28,11 @@ baseline is enough of a fallback for the rare case it's needed.
 **Windows Firewall:** if the signaling/viewer ports don't respond from your phone,
 add an inbound allow rule (see the root `README.md` troubleshooting notes).
 
+**Verified cross-network (2026-08-18):** confirmed end-to-end with the PC on
+its home WiFi and the phone on mobile data (different networks, no shared
+LAN) — session join, device pairing approval, and live screen streaming all
+worked over the Tailscale IP.
+
 ## Azure App Service + coturn (alternative — not tested)
 
 The original design targeted Azure App Service for the signaling server and an

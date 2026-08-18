@@ -17,3 +17,9 @@ def capture_frame(monitor_index: int = 1) -> Frame:
         raw = sct.grab(monitor)
         data = np.array(raw)
         return Frame(width=raw.width, height=raw.height, data=data)
+
+
+def get_monitor_size(monitor_index: int = 1) -> tuple[int, int]:
+    with mss.mss() as sct:
+        monitor = sct.monitors[monitor_index]
+        return monitor["width"], monitor["height"]

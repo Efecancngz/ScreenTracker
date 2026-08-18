@@ -1,10 +1,42 @@
 # Handoff — ScreenTracker
-Son güncelleme: 2026-08-18, güncelleyen: Claude Sonnet 5
+Son güncelleme: 2026-08-18 (gece), güncelleyen: Claude Sonnet 5
 
 ## Şu an ne yapılıyor
-Faz 1 (MVP) `feat/screen-view-mvp` dalında tamamlandı, PR #1 açık:
-https://github.com/Efecancngz/ScreenTracker/pull/1. Local ağ üzerinden
-(aynı WiFi, PC↔telefon) uçtan uca doğrulandı.
+Faz 1 (MVP) + device pairing + **Faz 2 (uzaktan input kontrolü)** hepsi
+`feat/screen-view-mvp` dalında tamamlandı, PR #1 açık:
+https://github.com/Efecancngz/ScreenTracker/pull/1 — **kullanıcı kendisi
+merge edecek**.
+
+**Faz 2 (2026-08-18 gece) — 7/7 task tamamlandı, subagent-driven-development
+ile uygulandı, final whole-branch review (opus) sonrası 1 fix dalgasıyla
+temiz:**
+- Viewer'daki dokunma/mouse/klavye/scroll girdisi, mevcut WebRTC bağlantısına
+  eklenen bir `RTCDataChannel` üzerinden host'a iletiliyor — sinyalizasyon
+  protokolüne hiç dokunulmadı
+- Host: `pynput` ile OS-seviyesi mouse/klavye enjeksiyonu (`input_injector.py`),
+  `HostPeerConnection`'a kablolandı
+- Viewer: `useInputControl` hook'u — tek dokunma/uzun basış (sağ tık)/
+  sürükleme ayrımı, `VideoPlayer`'a bağlantı-durumu göstergesiyle kablolandı
+- Final review'da bulunan 5 gerçek hata tek fix dalgasında düzeltildi:
+  - **Kritik**: koordinat normalizasyonu `object-fit: contain` letterbox'ını
+    hesaba katmıyordu — telefon farklı en-boy oranındaki masaüstünü izlerken
+    tıklamalar sistematik olarak yanlış yere düşüyordu (asıl kullanım
+    senaryosu!)
+  - İkinci parmak, `pointercancel`, ve blur/tab-switch ile mouse butonu/
+    klavye tuşları host'ta sonsuza kadar basılı kalabiliyordu — üçü de
+    düzeltildi (pointerId takibi, pointercancel handler, blur'da tuş bırakma)
+  - `pynput` construction'ı guard'sızdı — ekransız bir Linux host'ta Faz 1
+    video-only akışını bile kırardı; artık graceful degrade ediyor
+- Tüm testler yeşil: host-app 52/52, viewer-app 41/41, build temiz
+- Manuel E2E henüz yapılmadı (kod tarafı tamamlandı, gerçek cihazda test
+  kullanıcının kararına bağlı)
+
+Local ağ üzerinden (aynı WiFi, PC↔telefon) uçtan uca doğrulandı.
+
+**Tailscale ile çapraz ağ bağlantısı da bugün doğrulandı** (PC evdeki
+WiFi'de, telefon mobil veride — ortak LAN yok): oturum kodu ile
+bağlanma, pairing onayı ve canlı ekran akışı hatasız çalıştı. Detay:
+`docs/deployment.md` → "Verified cross-network" notu.
 
 **Cihaz eşleştirme (device pairing) özelliği** ayrı bir plan olarak
 (`docs/superpowers/plans/2026-08-17-device-pairing-and-deployment.md`)
@@ -55,13 +87,34 @@ oluşmuyordu.
 aynı davranış. Tek satırlık, kök nedene yönelik düzeltme;
 `test_returns_false_when_stdin_has_no_data` testi eklendi.
 
+## Bugün bulunan ikinci hata: siyah ekran (artık düzeltildi)
+Kullanıcı telefonda viewer'ı LAN IP üzerinden düz HTTP ile açtığında
+tamamen siyah ekranla karşılaştı. Kök neden: `crypto.randomUUID()` sadece
+secure context'te (HTTPS veya `localhost`) var — LAN IP + HTTP secure
+context sayılmadığı için tarayıcı bu API'yi hiç sunmuyor,
+`getOrCreateDeviceId()` mount sırasında `TypeError` fırlatıyor, error
+boundary olmadığı için React hiçbir şey render edemiyordu. Düzeltme:
+`viewer-app/src/deviceIdentity.ts`'de `crypto.getRandomValues()` ile elle
+UUIDv4 üretimine fallback (bu API her context'te mevcut). Test eklendi,
+kullanıcı telefonda tekrar denedi: pairing onayı + canlı görüntü hatasız
+çalıştı. Commit `9fa420d`.
+
 ## Sıradaki adım
-Device pairing planı tamamlandı (10/10 task). Sıradaki mantıklı adım: bu
-değişiklikleri PR #1'e push edip (aynı branch üzerinde geliştirildi, ayrı
-bir PR değil), gerekirse whole-branch final review'ı device pairing
-commit'lerini de kapsayacak şekilde tekrar çalıştırmak. Sonrasında Faz 2
-(input kontrolü) veya Azure/cross-network deploy testi konuşulabilir —
-ikisi de şu an aktif değil.
+Faz 1 + device pairing + Faz 2, hepsi kod tarafında tamamlandı. Kullanıcı
+PR #1'i kendisi merge edecek. Faz 2'nin **manuel E2E doğrulaması henüz
+yapılmadı** — gerçek bir cihazda dokunma/uzun basış/sürükleme/scroll/klavye
+denenmedi, sadece otomatik testler ve final review geçti. Sonraki oturumda
+öncelik: kullanıcı isterse gerçek cihazda Faz 2'yi test etmek. Ayrıca
+final review'ın park ettiği (merge'i bloklamayan) iki minor not var:
+letterbox fallback'te son geçerli nokta yerine başlangıç noktası kullanımı,
+ve blur'da sadece klavye tuşlarının bırakılması (mouse butonu değil) —
+detaylar commit `7311bd4`'ün mesajında ve final review geçmişinde.
+
+Sonrasında konuşulabilecek, şu an aktif olmayan konular:
+- İki-parmak scroll (spec'te fonksiyonel gereksinim olarak listeli ama
+  touch üzerinde implementasyon yolu yok — sadece mouse wheel çalışıyor)
+- Azure deploy testi (Tailscale zaten birincil yol olarak seçilip test
+  edildiği için düşük öncelikli)
 
 ## Bilinmesi gerekenler
 - Azure for Students hesabı doğrulandı, kaynak oluşturma çalışıyor
@@ -88,6 +141,17 @@ ikisi de şu an aktif değil.
 - **I8**: ICE başarısızlığı için timeout/retry/kullanıcı mesajı yok (spec §5)
 - Oturum kodu entropisi (~30 bit) planın orijinal 128-bit hedefinin altında —
   bilinçli UX tercihi, rate limiting ile kısmen telafi edildi
+- Faz 2: iki-parmak scroll'un touch üzerinde implementasyonu yok (sadece
+  mouse wheel çalışıyor) — spec'te fonksiyonel gereksinim olarak listeli,
+  şu an eksik
+- Faz 2: `pointerId` başına tek gesture desteklenir, gerçek multi-touch yok
+  (bilinçli kapsam kararı)
+- Faz 2: klavye dinleyicileri `window`'a bağlı, video elementine scope'lu
+  değil — video dışına yazılan her şey de host'a gidiyor
+- Faz 2: `handleBlur` sadece basılı klavye tuşlarını bırakıyor, basılı mouse
+  butonunu değil — tab-switch mid-drag'de buton `pointercancel`/`pointerup`/
+  unmount'tan biri tetiklenene kadar host'ta basılı kalabilir (final review
+  park etti, merge'i bloklamadı)
 
 Minor'lar: ölü Vite template dosyaları, boilerplate README/index.html başlığı;
 tsconfig.app.json'da `"strict": true` eksik; kullanılmayan
@@ -96,14 +160,21 @@ SIGNALING_SERVER_HOST/PORT değişkenleri; conftest.py'deki sys.modules hack'i.
 ## İlgili dosyalar
 - docs/superpowers/specs/2026-08-17-remote-screen-view-design.md — Faz 1 tasarımı
 - docs/superpowers/specs/2026-08-17-device-pairing-and-deployment.md — pairing tasarımı
+- docs/superpowers/specs/2026-08-18-input-control-design.md — Faz 2 tasarımı
 - docs/superpowers/plans/2026-08-17-screentracker-mvp.md — Faz 1 planı
 - docs/superpowers/plans/2026-08-17-device-pairing-and-deployment.md — pairing planı
+- docs/superpowers/plans/2026-08-18-input-control.md — Faz 2 planı (7 task)
 - .superpowers/sdd/2026-08-17-device-pairing-and-deployment/progress.md —
   tüm task'ların ledger'ı, Task 10'un EOFError kök neden analizi burada
+- Faz 2'nin SDD ledger'ı tamamlanınca silindi (plan tamamlandı, kayıt artık
+  git geçmişinde — commit mesajları ve final review bulguları için
+  `git log e82a3fd..7311bd4` ve commit `7311bd4`'e bakılabilir)
 - docs/api-spec.md, docs/architecture.md, docs/deployment.md
 - PR #1: https://github.com/Efecancngz/ScreenTracker/pull/1
 
-## Son 3 commit
-- 72be6c1 docs: add deployment guide and document device pairing
-- aed3e74 feat: auto-authenticate paired devices and handle pairing states in the viewer
-- 24c9fec feat: add viewer device identity and stored-pairing helpers
+## Son commit'ler
+- 7311bd4 fix: address final review findings for input control
+- 6660147 docs: fix json.loads reference and translate input control docs to English
+- 29ed1db docs: document the input control DataChannel protocol
+- addb374 fix: sync input status indicator to DataChannel open/close events
+- 6c1ec6c feat: wire input DataChannel through VideoPlayer with a connection-status indicator

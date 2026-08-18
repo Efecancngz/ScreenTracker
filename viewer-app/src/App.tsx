@@ -59,7 +59,7 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
     [send]
   );
 
-  const { remoteStream, handleOffer, handleRemoteIceCandidate } = useWebRTCViewer({
+  const { remoteStream, handleOffer, handleRemoteIceCandidate, inputChannel } = useWebRTCViewer({
     onIceCandidate: handleIceCandidate,
   });
 
@@ -146,7 +146,7 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
             {errorMessage}
           </p>
         )}
-        {status === "streaming" && <VideoPlayer stream={remoteStream} />}
+        {status === "streaming" && <VideoPlayer stream={remoteStream} inputChannel={inputChannel} />}
       </main>
     </div>
   );
