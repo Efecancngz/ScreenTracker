@@ -108,6 +108,14 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
 
     return () => {
       if (longPressTimer) clearTimeout(longPressTimer);
+      // If a button is currently "held" from the host's perspective (mid-drag
+      // past the threshold, or a long-press that already fired a right-click
+      // pointer-down), tearing down without releasing it would leave the
+      // host's mouse button stuck down forever. Send a compensating
+      // pointer-up at the last known position before removing listeners.
+      if (activeButton !== null && downAt) {
+        send({ type: "pointer-up", x: downAt.x, y: downAt.y, button: activeButton });
+      }
       video.removeEventListener("pointerdown", handlePointerDown);
       video.removeEventListener("pointermove", handlePointerMove);
       video.removeEventListener("pointerup", handlePointerUp);

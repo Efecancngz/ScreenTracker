@@ -181,4 +181,74 @@ describe("useInputControl", () => {
       key: "a",
     });
   });
+
+  it("releases a held left-button drag with a synthetic pointer-up on unmount", () => {
+    const video = setupVideo();
+    const channel = fakeChannel();
+    const videoRef = createRef<HTMLVideoElement>();
+    // @ts-expect-error - test assignment
+    videoRef.current = video;
+
+    const { unmount } = renderHook(() => useInputControl({ videoRef, channel }));
+
+    video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
+    video.dispatchEvent(pointerEvent("pointermove", 130, 50));
+
+    expect(channel.send).toHaveBeenCalledTimes(2);
+
+    unmount();
+
+    expect(channel.send).toHaveBeenCalledTimes(3);
+    expect(JSON.parse((channel.send as any).mock.calls[2][0])).toEqual({
+      type: "pointer-up",
+      x: 0.5,
+      y: 0.5,
+      button: "left",
+    });
+  });
+
+  it("releases a held right-button long-press with a synthetic pointer-up on unmount", () => {
+    const video = setupVideo();
+    const channel = fakeChannel();
+    const videoRef = createRef<HTMLVideoElement>();
+    // @ts-expect-error - test assignment
+    videoRef.current = video;
+
+    const { unmount } = renderHook(() => useInputControl({ videoRef, channel }));
+
+    video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
+    vi.advanceTimersByTime(500);
+
+    expect(channel.send).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    expect(channel.send).toHaveBeenCalledTimes(2);
+    expect(JSON.parse((channel.send as any).mock.calls[1][0])).toEqual({
+      type: "pointer-up",
+      x: 0.5,
+      y: 0.5,
+      button: "right",
+    });
+  });
+
+  it("does not send anything extra on unmount when no button is held", () => {
+    const video = setupVideo();
+    const channel = fakeChannel();
+    const videoRef = createRef<HTMLVideoElement>();
+    // @ts-expect-error - test assignment
+    videoRef.current = video;
+
+    const { unmount } = renderHook(() => useInputControl({ videoRef, channel }));
+
+    // A completed tap: down then up, no button left "held".
+    video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
+    video.dispatchEvent(pointerEvent("pointerup", 100, 50));
+
+    expect(channel.send).toHaveBeenCalledTimes(2);
+
+    unmount();
+
+    expect(channel.send).toHaveBeenCalledTimes(2);
+  });
 });
