@@ -52,3 +52,38 @@ an invalid or unknown token gets `authenticate-failed` and the same release.
 
 `pair-rejected` `reason` values: `"denied"` (user rejected the pairing prompt), or
 `"missing-device-id"` (join-session had no device_id field).
+
+## Input control (WebRTC DataChannel)
+
+Fully independent of the signaling server: these messages flow as JSON
+strings over an `"input"`-labeled `RTCDataChannel` added to the existing
+WebRTC connection between host and viewer. The host creates this channel
+before the offer (`aiortc` `createDataChannel`); the viewer receives it via
+the `ondatachannel` event.
+
+| Message | Fields | Meaning |
+|---|---|---|
+| `pointer-down` | `x, y` (0-1 normalized), `button: "left" \| "right"` | Press started |
+| `pointer-move` | `x, y` | Movement while pressed |
+| `pointer-up` | `x, y`, `button` | Press ended |
+| `wheel` | `deltaX, deltaY` | Scroll (raw browser `WheelEvent` values) |
+| `key-down` | `key` (browser `KeyboardEvent.key` value) | Key pressed |
+| `key-up` | `key` | Key released |
+
+The host multiplies `x`/`y` by its own screen size to convert to real
+pixels, clamping to `[0, 1]` first. Click-and-drag is not distinguished as
+a separate message on the host side — it falls out naturally from the
+`pynput` press/move/release calls driven by
+`pointer-down`/`pointer-move`/`pointer-up`. A long press (right-click) is
+detected on the viewer with a 500ms threshold and sent as
+`button: "right"`.
+
+Unknown or malformed messages (a `json.loads` parse failure) are silently
+dropped on the host side; if a `pynput` call raises an exception (e.g. on
+macOS when Accessibility permission hasn't been granted), the host logs it
+once and keeps running — it does not log repeatedly per message.
+
+Authorization: this channel exists on top of an already-established WebRTC
+connection — i.e. for a device that has already passed pairing approval.
+There is no separate input approval step (a deliberate scope decision, see
+the design spec).
