@@ -52,3 +52,34 @@ an invalid or unknown token gets `authenticate-failed` and the same release.
 
 `pair-rejected` `reason` values: `"denied"` (user rejected the pairing prompt), or
 `"missing-device-id"` (join-session had no device_id field).
+
+## Input control (WebRTC DataChannel)
+
+Signaling server'dan tamamen bağımsız: bu mesajlar host ile viewer arasındaki
+WebRTC bağlantısına eklenen `"input"` etiketli `RTCDataChannel` üzerinden,
+JSON string olarak akar. Host bu kanalı offer'dan önce oluşturur (`aiortc`
+`createDataChannel`), viewer `ondatachannel` event'iyle alır.
+
+| Mesaj | Alanlar | Anlamı |
+|---|---|---|
+| `pointer-down` | `x, y` (0-1 normalize), `button: "left" \| "right"` | Basış başladı |
+| `pointer-move` | `x, y` | Basılıyken hareket |
+| `pointer-up` | `x, y`, `button` | Basış bitti |
+| `wheel` | `deltaX, deltaY` | Scroll (tarayıcı `WheelEvent` değerleri, ham) |
+| `key-down` | `key` (tarayıcı `KeyboardEvent.key` değeri) | Tuşa basıldı |
+| `key-up` | `key` | Tuş bırakıldı |
+
+Host, `x`/`y`'yi kendi ekran boyutuyla çarpıp gerçek piksele çevirir,
+`[0, 1]` aralığına clamp'ler. Tık ile sürükleme host'ta ayrıca ayırt
+edilmez — `pointer-down`/`pointer-move`/`pointer-up`'ın `pynput`
+press/move/release çağrılarından kendiliğinden çıkar. Uzun basış (sağ tık),
+viewer'da 500ms eşikle tespit edilip `button: "right"` olarak gönderilir.
+
+Bilinmeyen veya bozuk (`JSON.parse` hatası veren) mesajlar host tarafında
+sessizce atlanır; `pynput` çağrısı bir istisna fırlatırsa (örn. macOS'ta
+Accessibility izni verilmemişse) host bunu bir kere loglar ve çalışmaya
+devam eder — mesaj başına tekrar tekrar loglamaz.
+
+Yetkilendirme: bu kanal, zaten kurulmuş bir WebRTC bağlantısı üzerinde —
+yani zaten pairing onayından geçmiş bir cihaz için var. Ayrı bir input
+onay adımı yok (bilinçli kapsam kararı, bkz. tasarım spec'i).
