@@ -55,31 +55,35 @@ an invalid or unknown token gets `authenticate-failed` and the same release.
 
 ## Input control (WebRTC DataChannel)
 
-Signaling server'dan tamamen bağımsız: bu mesajlar host ile viewer arasındaki
-WebRTC bağlantısına eklenen `"input"` etiketli `RTCDataChannel` üzerinden,
-JSON string olarak akar. Host bu kanalı offer'dan önce oluşturur (`aiortc`
-`createDataChannel`), viewer `ondatachannel` event'iyle alır.
+Fully independent of the signaling server: these messages flow as JSON
+strings over an `"input"`-labeled `RTCDataChannel` added to the existing
+WebRTC connection between host and viewer. The host creates this channel
+before the offer (`aiortc` `createDataChannel`); the viewer receives it via
+the `ondatachannel` event.
 
-| Mesaj | Alanlar | Anlamı |
+| Message | Fields | Meaning |
 |---|---|---|
-| `pointer-down` | `x, y` (0-1 normalize), `button: "left" \| "right"` | Basış başladı |
-| `pointer-move` | `x, y` | Basılıyken hareket |
-| `pointer-up` | `x, y`, `button` | Basış bitti |
-| `wheel` | `deltaX, deltaY` | Scroll (tarayıcı `WheelEvent` değerleri, ham) |
-| `key-down` | `key` (tarayıcı `KeyboardEvent.key` değeri) | Tuşa basıldı |
-| `key-up` | `key` | Tuş bırakıldı |
+| `pointer-down` | `x, y` (0-1 normalized), `button: "left" \| "right"` | Press started |
+| `pointer-move` | `x, y` | Movement while pressed |
+| `pointer-up` | `x, y`, `button` | Press ended |
+| `wheel` | `deltaX, deltaY` | Scroll (raw browser `WheelEvent` values) |
+| `key-down` | `key` (browser `KeyboardEvent.key` value) | Key pressed |
+| `key-up` | `key` | Key released |
 
-Host, `x`/`y`'yi kendi ekran boyutuyla çarpıp gerçek piksele çevirir,
-`[0, 1]` aralığına clamp'ler. Tık ile sürükleme host'ta ayrıca ayırt
-edilmez — `pointer-down`/`pointer-move`/`pointer-up`'ın `pynput`
-press/move/release çağrılarından kendiliğinden çıkar. Uzun basış (sağ tık),
-viewer'da 500ms eşikle tespit edilip `button: "right"` olarak gönderilir.
+The host multiplies `x`/`y` by its own screen size to convert to real
+pixels, clamping to `[0, 1]` first. Click-and-drag is not distinguished as
+a separate message on the host side — it falls out naturally from the
+`pynput` press/move/release calls driven by
+`pointer-down`/`pointer-move`/`pointer-up`. A long press (right-click) is
+detected on the viewer with a 500ms threshold and sent as
+`button: "right"`.
 
-Bilinmeyen veya bozuk (`JSON.parse` hatası veren) mesajlar host tarafında
-sessizce atlanır; `pynput` çağrısı bir istisna fırlatırsa (örn. macOS'ta
-Accessibility izni verilmemişse) host bunu bir kere loglar ve çalışmaya
-devam eder — mesaj başına tekrar tekrar loglamaz.
+Unknown or malformed messages (a `json.loads` parse failure) are silently
+dropped on the host side; if a `pynput` call raises an exception (e.g. on
+macOS when Accessibility permission hasn't been granted), the host logs it
+once and keeps running — it does not log repeatedly per message.
 
-Yetkilendirme: bu kanal, zaten kurulmuş bir WebRTC bağlantısı üzerinde —
-yani zaten pairing onayından geçmiş bir cihaz için var. Ayrı bir input
-onay adımı yok (bilinçli kapsam kararı, bkz. tasarım spec'i).
+Authorization: this channel exists on top of an already-established WebRTC
+connection — i.e. for a device that has already passed pairing approval.
+There is no separate input approval step (a deliberate scope decision, see
+the design spec).
