@@ -364,15 +364,18 @@ Expected: FAIL — `ImportError: cannot import name 'InputInjector'`
 
 - [ ] **Step 4: Write minimal implementation**
 
-`host-app/screentracker_host/input_injector.py`'nin başına importları ekle, sonuna `InputInjector`'ı ekle:
+`host-app/screentracker_host/input_injector.py`'nin **mevcut içeriğini SİLME** — Task 2'de yazılan `KEY_MAP`, `clamp_unit`, `normalize_to_pixels`, `wheel_delta_to_scroll_units`, `resolve_key` dosyada aynen kalacak. Bu adım sadece dosyaya EKLEME yapıyor:
+
+1. Dosyanın en başına, mevcut `from pynput.keyboard import Key` satırının hemen altına ekle:
 
 ```python
 from pynput import keyboard, mouse
-from pynput.keyboard import Key
 from pynput.mouse import Button
+```
 
-# ... (KEY_MAP, clamp_unit, normalize_to_pixels, wheel_delta_to_scroll_units, resolve_key — Task 2'den aynen kalır)
+2. Dosyanın en sonuna (mevcut `resolve_key` fonksiyonundan sonra) ekle:
 
+```python
 _BUTTON_MAP: dict[str, Button] = {"left": Button.left, "right": Button.right}
 
 
