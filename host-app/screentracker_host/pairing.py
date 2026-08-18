@@ -12,7 +12,8 @@ async def request_approval(
 ) -> bool:
     """Ask a human at the terminal to approve a new device. Runs the
     (blocking) prompt in an executor so it never blocks the event loop.
-    Returns False on timeout or any answer that isn't 'y'."""
+    Returns False on timeout, on a closed/non-interactive stdin, or any
+    answer that isn't 'y'."""
     loop = asyncio.get_event_loop()
     prompt_text = f"New device requesting access: {label} ({device_id[:8]}) — approve? [y/N]: "
     try:
@@ -20,6 +21,6 @@ async def request_approval(
             loop.run_in_executor(None, prompt_fn, prompt_text),
             timeout=timeout_seconds,
         )
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, EOFError):
         return False
     return answer.strip().lower() == "y"

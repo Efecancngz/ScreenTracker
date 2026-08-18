@@ -33,3 +33,12 @@ async def test_returns_false_on_timeout():
         "Test Phone", "dev-1", prompt_fn=slow_prompt, timeout_seconds=0.05
     )
     assert approved is False
+
+
+@pytest.mark.asyncio
+async def test_returns_false_when_stdin_has_no_data():
+    def eof_prompt(_: str) -> str:
+        raise EOFError("EOF when reading a line")
+
+    approved = await request_approval("Test Phone", "dev-1", prompt_fn=eof_prompt)
+    assert approved is False
