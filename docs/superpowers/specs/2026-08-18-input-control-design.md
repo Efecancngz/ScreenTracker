@@ -82,8 +82,10 @@ piksel koordinatını hesaplar.
    ayrımını yapar (basit bir zamanlayıcı + hareket eşiği ile); normalize
    koordinatlı mesajları DataChannel'a `send()` eder
 2. **`viewer-app/src/components/VideoPlayer.tsx`** (mevcut, genişletilecek)
-   — `useInputControl`'ü bağlamak için video elementine ref + input
-   kontrolünün açık/kapalı olduğunu gösteren küçük bir görsel gösterge
+   — `useInputControl`'ü bağlamak için video elementine ref + DataChannel'ın
+   bağlantı durumunu (henüz açılmadı / hazır) gösteren küçük bir görsel
+   gösterge. Bu salt bir durum göstergesi — kullanıcının aç/kapa
+   yapabileceği bir anahtar değil (input her zaman aktif, bkz. §0 Güvenlik)
 3. **`host-app/screentracker_host/input_injector.py`** (yeni) — `pynput`
    sarmalayıcısı: `move_to`, `press`/`release` (mouse + klavye), `scroll`;
    normalize koordinatı gerçek piksele çeviren saf fonksiyon ayrı test
@@ -98,10 +100,16 @@ piksel koordinatını hesaplar.
 |---|---|---|
 | `pointer-down` | `x, y` (0-1), `button: "left" \| "right"` | Basış başladı |
 | `pointer-move` | `x, y` | Basılıyken hareket (drag) |
-| `pointer-up` | `x, y`, `button` | Basış bitti — `down`/`up` aynı konumdaysa tık, farklıysa drag |
+| `pointer-up` | `x, y`, `button` | Basış bitti |
 | `wheel` | `deltaX, deltaY` | Scroll |
 | `key-down` | `key` (örn. `"a"`, `"Enter"`, `"Shift"`) | Tuşa basıldı |
 | `key-up` | `key` | Tuş bırakıldı |
+
+Host, tık ile sürüklemeyi ayrıca ayırt etmez — `pointer-down`'da basar,
+`pointer-move` geldikçe basılıyken taşır, `pointer-up`'ta bırakır. Aynı
+konumda down/up = doğal olarak bir tık; farklı konumda = doğal olarak bir
+sürükleme. Bu ayrım tamamen `pynput`'un press/move/release
+primitive'lerinden kendiliğinden çıkar, host'ta özel bir mantık gerekmez.
 
 Uzun basış (sağ tık), viewer tarafında zaman eşiğiyle tespit edilip
 `button: "right"` olarak tek bir `pointer-down`/`pointer-up` çiftine
