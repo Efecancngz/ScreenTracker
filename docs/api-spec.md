@@ -71,12 +71,38 @@ the `ondatachannel` event.
 | `key-up` | `key` | Key released |
 
 The host multiplies `x`/`y` by its own screen size to convert to real
-pixels, clamping to `[0, 1]` first. Click-and-drag is not distinguished as
-a separate message on the host side — it falls out naturally from the
-`pynput` press/move/release calls driven by
-`pointer-down`/`pointer-move`/`pointer-up`. A long press (right-click) is
-detected on the viewer with a 500ms threshold and sent as
-`button: "right"`.
+pixels, clamping to `[0, 1]` first. Click-and-drag and press-and-hold are
+not distinguished as separate messages on the host side — they fall out
+naturally from the `pynput` press/move/release calls driven by
+`pointer-down`/`pointer-move`/`pointer-up`.
+
+Viewer-side touch gesture mapping (mouse and trackpad map onto the same
+messages directly — click, drag, and wheel scroll — with no gesture
+disambiguation needed):
+
+- One finger: press = `pointer-down` (`button: "left"`), move while down =
+  `pointer-move`, release = `pointer-up`. Mirrors a real left mouse button
+  directly, including holding it down in place — there is no separate
+  "hold" gesture or timing threshold; not lifting simply keeps it down.
+- Two fingers, held in place for 400ms without moving more than 20px from
+  where they touched down: promoted to a held right button — `pointer-down`
+  (`button: "right"`) at the midpoint immediately, `pointer-move` as the
+  midpoint continues to shift slightly, `pointer-up` on release. Mirrors
+  the single-finger left button, just with two fingers and a short delay to
+  disambiguate it from the start of a scroll.
+- Two fingers, released before that 400ms threshold and before the 20px
+  movement threshold: still resolves as a right click (`pointer-down` +
+  `pointer-up` together) — a fast press-release is a click, the same as a
+  real mouse button.
+- Two fingers, moved past the 20px threshold before the 400ms hold timer
+  fires: a `wheel` scroll instead (this cancels the hold timer), computed
+  from the touches' midpoint delta — moving both fingers up scrolls the
+  same way a positive-deltaY mouse wheel tick would ("natural" scrolling).
+
+If a second finger touches down while the first is already held (single
+finger, button down), the single-finger hold is cancelled with a
+compensating `pointer-up` before the two-finger gesture starts tracking —
+this avoids a stray left-button-down being left behind on the host.
 
 Unknown or malformed messages (a `json.loads` parse failure) are silently
 dropped on the host side; if a `pynput` call raises an exception (e.g. on

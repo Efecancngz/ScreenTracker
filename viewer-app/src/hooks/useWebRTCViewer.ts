@@ -19,6 +19,12 @@ export function buildIceServers(): RTCIceServer[] {
 
 interface UseWebRTCViewerOptions {
   onIceCandidate: (candidate: RTCIceCandidate) => void;
+  // Bumping this rebuilds the RTCPeerConnection from scratch. A single
+  // RTCPeerConnection can't be renegotiated against a completely different
+  // remote peer, so a signaling reconnect (which re-authenticates against a
+  // fresh offer from a fresh host-side connection) needs a fresh one here
+  // too, not a reused, already-negotiated one.
+  resetKey?: number;
 }
 
 interface UseWebRTCViewerResult {
@@ -30,6 +36,7 @@ interface UseWebRTCViewerResult {
 
 export function useWebRTCViewer({
   onIceCandidate,
+  resetKey,
 }: UseWebRTCViewerOptions): UseWebRTCViewerResult {
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -38,6 +45,11 @@ export function useWebRTCViewer({
   useEffect(() => {
     const pc = new RTCPeerConnection({ iceServers: buildIceServers() });
     pcRef.current = pc;
+    // Clear out whatever the previous connection (if any) left behind so a
+    // stale, now-dead video frame or a dead data channel doesn't linger
+    // on screen while the fresh connection negotiates.
+    setRemoteStream(null);
+    setInputChannel(null);
 
     pc.ontrack = (event) => setRemoteStream(event.streams[0]);
     pc.onicecandidate = (event) => {
@@ -46,7 +58,7 @@ export function useWebRTCViewer({
     pc.ondatachannel = (event) => setInputChannel(event.channel);
 
     return () => pc.close();
-  }, [onIceCandidate]);
+  }, [onIceCandidate, resetKey]);
 
   const handleOffer = useCallback(async (sdp: string): Promise<string> => {
     const pc = pcRef.current;

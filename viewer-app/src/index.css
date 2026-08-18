@@ -62,6 +62,24 @@
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+  /* This app is a single full-bleed video view with no scrollable content
+     of its own. Without this, mobile browsers can treat a two-finger touch
+     gesture over the video as a page scroll/pull-to-refresh instead of
+     passing it through to our pointer handlers — especially with the
+     100vh/100dvh mismatch that comes from a mobile browser's address bar
+     showing/hiding. */
+  overflow: hidden;
+  overscroll-behavior: none;
+  /* iOS Safari in particular can still rubber-band/bounce the page on a
+     two-finger touch even with overflow: hidden above — position: fixed is
+     the well-known, more aggressive lock that actually stops it there. */
+  position: fixed;
+  width: 100%;
+}
+
 body {
   margin: 0;
 }

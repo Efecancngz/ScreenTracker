@@ -1,9 +1,10 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from screentracker_host.main import _handle_peer_joined
+from screentracker_host.main import _handle_peer_joined, select_prompt_fn
 from screentracker_host.paired_devices import PairedDevices
+from screentracker_host.pairing import gui_prompt
 
 
 @pytest.mark.asyncio
@@ -134,3 +135,43 @@ async def test_missing_device_id_is_rejected_without_streaming(tmp_path):
     client.send.assert_any_await({"type": "pair-rejected", "reason": "missing-device-id"})
     client.send.assert_any_await({"type": "release-peer"})
     peer_connection.create_offer.assert_not_awaited()
+
+
+def test_select_prompt_fn_uses_input_on_a_real_console(monkeypatch):
+    monkeypatch.setattr("sys.stdin", MagicMock(isatty=MagicMock(return_value=True)))
+    assert select_prompt_fn() is input
+
+
+def test_select_prompt_fn_falls_back_to_gui_when_stdin_is_none(monkeypatch):
+    # pythonw.exe (the tray launcher) sets sys.stdin to None — there is no
+    # console for input() to read from.
+    monkeypatch.setattr("sys.stdin", None)
+    assert select_prompt_fn() is gui_prompt
+
+
+def test_select_prompt_fn_falls_back_to_gui_when_stdin_is_not_a_tty(monkeypatch):
+    # Piped/redirected stdin (e.g. run from another launcher) isn't
+    # interactive either, even though it isn't None.
+    monkeypatch.setattr("sys.stdin", MagicMock(isatty=MagicMock(return_value=False)))
+    assert select_prompt_fn() is gui_prompt
+
+
+@pytest.mark.asyncio
+async def test_unknown_device_prompt_uses_the_injected_prompt_fn(tmp_path):
+    paired_devices = PairedDevices(tmp_path / "paired_devices.json")
+    client = AsyncMock()
+    peer_connection = AsyncMock()
+    peer_connection.create_offer.return_value.sdp = "v=0..."
+    prompt_fn = MagicMock(return_value="y")
+
+    streaming = await _handle_peer_joined(
+        {"device_id": "dev-6", "token": None},
+        client=client,
+        peer_connection=peer_connection,
+        paired_devices=paired_devices,
+        host_id="host-1",
+        prompt_fn=prompt_fn,
+    )
+
+    assert streaming is True
+    prompt_fn.assert_called_once()

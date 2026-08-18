@@ -4,6 +4,25 @@ from collections.abc import Callable
 APPROVAL_TIMEOUT_SECONDS = 60.0
 
 
+def gui_prompt(prompt_text: str) -> str:
+    """Show a native Yes/No dialog and return "y"/"n" — used instead of
+    input() when there's no console to read from (e.g. running under
+    pythonw.exe via the tray launcher, where sys.stdin is None)."""
+    import tkinter as tk
+    from tkinter import messagebox
+
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        approved = messagebox.askyesno(
+            "ScreenTracker — pairing request", prompt_text, parent=root
+        )
+    finally:
+        root.destroy()
+    return "y" if approved else "n"
+
+
 async def request_approval(
     label: str,
     device_id: str,

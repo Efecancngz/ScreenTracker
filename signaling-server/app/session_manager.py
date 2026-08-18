@@ -18,6 +18,12 @@ class Session:
     host_connection_id: str
     viewer_connection_id: str | None = None
     created_at: float = field(default_factory=time.monotonic)
+    # Once a session has been claimed at least once, a later viewer
+    # disconnect (e.g. a page refresh) only releases the viewer slot — it
+    # does not remove the session. The TTL exists to expire codes nobody
+    # ever used, not to time out a live host mid-reconnect, so it stops
+    # applying the moment the first viewer successfully joins.
+    ever_claimed: bool = False
 
 
 class SessionNotFoundError(Exception):
@@ -60,10 +66,11 @@ class SessionManager:
             if session.viewer_connection_id == viewer_connection_id:
                 return session
             raise SessionAlreadyClaimedError(session_id)
-        if self._is_expired(session):
+        if not session.ever_claimed and self._is_expired(session):
             del self._sessions[session_id]
             raise SessionExpiredError(session_id)
         session.viewer_connection_id = viewer_connection_id
+        session.ever_claimed = True
         return session
 
     def get_session(self, session_id: str) -> Session | None:

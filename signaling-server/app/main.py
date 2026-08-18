@@ -1,7 +1,9 @@
 import logging
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from starlette.staticfiles import StaticFiles
 
 from app.models import parse_inbound_message
 from app.rate_limiter import RateLimiter
@@ -186,7 +188,10 @@ async def _relay_to_peer(connection_id: str, raw: dict) -> None:
 
 async def _handle_disconnect(connection_id: str) -> None:
     peer_ws = _peer_websocket_for(connection_id)
+    session = None
     session_id = _connection_sessions.pop(connection_id, None)
+    if session_id is not None:
+        session = session_manager.get_session(session_id)
     _connections.pop(connection_id, None)
     for host_id, mapped_connection_id in list(_host_ids.items()):
         if mapped_connection_id == connection_id:
@@ -195,7 +200,14 @@ async def _handle_disconnect(connection_id: str) -> None:
     if peer_ws is not None:
         await peer_ws.send_json({"type": "peer-disconnected"})
     if session_id is not None:
-        session_manager.remove_session(session_id)
+        if session is not None and session.host_connection_id != connection_id:
+            # The viewer disconnected, not the host (e.g. a page refresh) —
+            # only free the viewer slot so the session survives and a
+            # reconnect (via stored pairing or the same code) can re-claim
+            # it without the host needing to restart.
+            session_manager.release_viewer(session_id)
+        else:
+            session_manager.remove_session(session_id)
 
 
 def _peer_websocket_for(connection_id: str) -> WebSocket | None:
@@ -211,3 +223,20 @@ def _peer_websocket_for(connection_id: str) -> WebSocket | None:
         else session.host_connection_id
     )
     return _connections.get(peer_id) if peer_id else None
+
+
+# The built viewer app (`npm run build` in viewer-app/, output dir `dist`) is
+# served from the same origin as this server so a phone only ever needs one
+# URL. Mounted last — and after the "/ws" route above — so it only ever
+# catches plain HTTP requests that nothing else matched; a Mount registered
+# before the websocket route would intercept "/ws" connections too, since
+# Starlette tries routes in registration order.
+_VIEWER_DIST = Path(__file__).resolve().parent.parent.parent / "viewer-app" / "dist"
+if _VIEWER_DIST.is_dir():
+    app.mount("/", StaticFiles(directory=_VIEWER_DIST, html=True), name="viewer")
+else:
+    logger.warning(
+        "Viewer build not found at %s — run `npm run build` in viewer-app/ to serve it "
+        "from here. The signaling API still works without it.",
+        _VIEWER_DIST,
+    )

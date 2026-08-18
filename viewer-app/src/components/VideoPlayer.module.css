@@ -20,6 +20,13 @@
   object-fit: contain;
   background: var(--bg);
   touch-action: none;
+  /* Prevent the native "hold to save/share this media" popup on long-press
+     (iOS Safari's callout menu, and the equivalent long-press selection UI
+     on other mobile browsers) so a long-press always drives right-click
+     input control instead of a system menu. */
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .inputStatus {
@@ -35,5 +42,23 @@
 }
 
 .inputReady {
+  color: var(--accent);
+}
+
+.fullscreenButton {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fullscreenButton:hover {
   color: var(--accent);
 }

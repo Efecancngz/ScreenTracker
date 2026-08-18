@@ -75,6 +75,79 @@ def test_host_disconnect_notifies_viewer():
             assert disconnect_notice == {"type": "peer-disconnected"}
 
 
+def test_viewer_disconnect_keeps_the_session_alive_for_a_reconnect():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws:
+        host_ws.send_json({"type": "create-session"})
+        session_id = host_ws.receive_json()["session_id"]
+
+        with client.websocket_connect("/ws") as viewer_ws:
+            viewer_ws.send_json({"type": "join-session", "session_id": session_id})
+            host_ws.receive_json()  # peer-joined
+            # Viewer disconnects (e.g. a page refresh) — the host is notified
+            # but its session must not be torn down.
+        disconnect_notice = host_ws.receive_json()
+        assert disconnect_notice == {"type": "peer-disconnected"}
+
+        with client.websocket_connect("/ws") as new_viewer_ws:
+            new_viewer_ws.send_json({"type": "join-session", "session_id": session_id})
+            peer_joined = host_ws.receive_json()
+            assert peer_joined["type"] == "peer-joined"
+
+
+def test_viewer_disconnect_then_authenticate_reconnect_finds_the_live_session():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws:
+        host_ws.send_json({"type": "register-host", "host_id": "host-reconnect"})
+        host_ws.send_json({"type": "create-session"})
+        host_ws.receive_json()  # session-created
+
+        with client.websocket_connect("/ws") as viewer_ws:
+            viewer_ws.send_json(
+                {
+                    "type": "authenticate",
+                    "host_id": "host-reconnect",
+                    "device_id": "dev-1",
+                    "token": "tok-1",
+                }
+            )
+            host_ws.receive_json()  # peer-joined
+        host_ws.receive_json()  # peer-disconnected
+
+        with client.websocket_connect("/ws") as new_viewer_ws:
+            new_viewer_ws.send_json(
+                {
+                    "type": "authenticate",
+                    "host_id": "host-reconnect",
+                    "device_id": "dev-1",
+                    "token": "tok-1",
+                }
+            )
+            peer_joined = host_ws.receive_json()
+            assert peer_joined["type"] == "peer-joined"
+
+
+def test_host_disconnect_still_fully_removes_the_session():
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws:
+        host_ws.send_json({"type": "create-session"})
+        session_id = host_ws.receive_json()["session_id"]
+
+        with client.websocket_connect("/ws") as viewer_ws:
+            viewer_ws.send_json({"type": "join-session", "session_id": session_id})
+            host_ws.receive_json()  # peer-joined
+
+            host_ws.close()
+            assert viewer_ws.receive_json() == {"type": "peer-disconnected"}
+
+    with client.websocket_connect("/ws") as late_joiner_ws:
+        late_joiner_ws.send_json({"type": "join-session", "session_id": session_id})
+        assert late_joiner_ws.receive_json() == {
+            "type": "session-expired",
+            "reason": "not-found",
+        }
+
+
 def test_unparseable_message_is_logged_and_skipped(caplog):
     client = TestClient(app)
     with caplog.at_level(logging.WARNING, logger="app.main"):

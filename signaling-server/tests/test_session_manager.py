@@ -86,3 +86,17 @@ def test_release_viewer_clears_the_claim_so_a_new_join_succeeds():
 def test_release_viewer_on_unknown_session_is_a_no_op():
     manager = SessionManager()
     manager.release_viewer("does-not-exist")  # must not raise
+
+
+def test_released_session_does_not_expire_even_after_the_ttl():
+    # A page refresh releases the viewer slot; the reconnect might happen
+    # after the original TTL window but must still succeed since the
+    # session was already claimed once (the host is still live).
+    manager = SessionManager(ttl_seconds=0.01)
+    session = manager.create_session(host_connection_id="host-1")
+    manager.join_session(session.session_id, viewer_connection_id="viewer-1")
+    manager.release_viewer(session.session_id)
+    time.sleep(0.02)
+
+    rejoined = manager.join_session(session.session_id, viewer_connection_id="viewer-2")
+    assert rejoined.viewer_connection_id == "viewer-2"

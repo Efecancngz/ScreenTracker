@@ -1,7 +1,8 @@
 .shell {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100vh; /* fallback for browsers without dvh support */
+  height: 100dvh; /* accounts for a mobile browser's address bar showing/hiding */
 }
 
 .topBar {

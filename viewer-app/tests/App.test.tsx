@@ -56,15 +56,13 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("shows a configuration error and opens no socket when the signaling URL is unset", () => {
+  it("falls back to the page's own origin when VITE_SIGNALING_SERVER_URL is unset", () => {
     vi.stubEnv("VITE_SIGNALING_SERVER_URL", "");
 
     render(<App />);
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "VITE_SIGNALING_SERVER_URL is not set"
-    );
-    expect(FakeWebSocket.instances).toHaveLength(0);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(FakeWebSocket.instances[0].url).toBe(`ws://${window.location.host}/ws`);
   });
 
   it("shows a human-readable error when the session has expired", async () => {
@@ -105,7 +103,7 @@ describe("App", () => {
     );
   });
 
-  it("shows a human-readable error when the host disconnects", async () => {
+  it("shows a human-readable error when the host disconnects and there is no pairing to retry with", async () => {
     render(<App />);
     await joinWithCode("X7K2M9");
 
@@ -113,6 +111,21 @@ describe("App", () => {
     act(() => socket.emitMessage({ type: "peer-disconnected" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Host disconnected.");
+  });
+
+  it("retries automatically instead of erroring out when a paired viewer gets peer-disconnected", async () => {
+    storePairing({ hostId: "host-1", token: "tok-1" });
+    render(<App />);
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emitOpen());
+    // The initial auto-authenticate attempt.
+    expect(JSON.parse(socket.sent[0])).toMatchObject({ type: "authenticate", host_id: "host-1" });
+
+    act(() => socket.emitMessage({ type: "peer-disconnected" }));
+
+    // Retried with the same stored pairing — no dead-end error shown.
+    expect(JSON.parse(socket.sent[1])).toMatchObject({ type: "authenticate", host_id: "host-1" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("auto-authenticates with a stored pairing instead of showing the join form", async () => {

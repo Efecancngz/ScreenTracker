@@ -13,6 +13,9 @@ dist/
 # Env
 .env
 
+# Launcher
+launcher/logs/
+
 # IDE
 .vscode/
 .idea/

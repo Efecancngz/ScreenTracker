@@ -23,8 +23,21 @@ function sessionRejectedMessage(reason: string, retryAfterSeconds?: number): str
   }
 }
 
+// When the viewer is built and served by the signaling server itself (the
+// normal setup — see the background app / launcher), the websocket lives on
+// the same origin the page was loaded from, so no configuration is needed.
+// VITE_SIGNALING_SERVER_URL remains available to override this for cases
+// where the two are served separately (e.g. `npm run dev` on its own port).
+function resolveSignalingServerUrl(): string | undefined {
+  const configured = import.meta.env.VITE_SIGNALING_SERVER_URL as string | undefined;
+  if (configured) return configured;
+  if (!window.location.host) return undefined;
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${window.location.host}/ws`;
+}
+
 export function App() {
-  const signalingServerUrl = import.meta.env.VITE_SIGNALING_SERVER_URL as string | undefined;
+  const signalingServerUrl = resolveSignalingServerUrl();
 
   if (!signalingServerUrl) {
     return (
@@ -34,8 +47,8 @@ export function App() {
         </header>
         <main className={styles.main}>
           <p className={styles.error} role="alert">
-            Configuration error: VITE_SIGNALING_SERVER_URL is not set. Copy .env.example to
-            .env in the repository root and restart the dev server.
+            Configuration error: could not determine the signaling server address. Set
+            VITE_SIGNALING_SERVER_URL in .env and restart the dev server.
           </p>
         </main>
       </div>
@@ -48,9 +61,19 @@ export function App() {
 function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
   const [status, setStatus] = useState<ViewerStatus>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  // Bumped whenever the connection needs to be renegotiated from scratch
+  // (WebRTC can't reuse a single RTCPeerConnection against a different
+  // remote peer) — forces useWebRTCViewer to build a fresh one.
+  const [connectionGeneration, setConnectionGeneration] = useState(0);
   const { send, lastMessage, isConnected } = useSignalingSocket(signalingServerUrl);
   const deviceIdRef = useRef(getOrCreateDeviceId());
   const attemptedAutoAuthRef = useRef(false);
+  // Distinguishes the very first connect (nothing to recover) from a
+  // reconnect after the signaling socket dropped and came back — mobile
+  // screen lock, a Wi-Fi/cell handoff, a brief server blip. Without this,
+  // a reconnect used to leave the page showing a permanently dead video
+  // with no error and no way back short of a manual refresh.
+  const everConnectedRef = useRef(false);
 
   const handleIceCandidate = useCallback(
     (candidate: RTCIceCandidate) => {
@@ -59,23 +82,41 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
     [send]
   );
 
-  const { remoteStream, handleOffer, handleRemoteIceCandidate, inputChannel } = useWebRTCViewer({
-    onIceCandidate: handleIceCandidate,
-  });
-
-  useEffect(() => {
-    if (!isConnected || attemptedAutoAuthRef.current) return;
+  const tryAutoAuthenticate = useCallback((): boolean => {
     const pairing = getStoredPairing();
-    if (!pairing) return;
+    if (!pairing) return false;
     attemptedAutoAuthRef.current = true;
     setStatus("authenticating");
+    setErrorMessage(null);
     send({
       type: "authenticate",
       host_id: pairing.hostId,
       device_id: deviceIdRef.current,
       token: pairing.token,
     });
-  }, [isConnected, send]);
+    return true;
+  }, [send]);
+
+  const { remoteStream, handleOffer, handleRemoteIceCandidate, inputChannel } = useWebRTCViewer({
+    onIceCandidate: handleIceCandidate,
+    resetKey: connectionGeneration,
+  });
+
+  useEffect(() => {
+    if (!isConnected) return;
+    // A reconnect with a stored pairing: the old RTCPeerConnection (on both
+    // ends) is likely stale or dead, so start the whole handshake over.
+    if (everConnectedRef.current && getStoredPairing()) {
+      attemptedAutoAuthRef.current = false;
+      setConnectionGeneration((generation) => generation + 1);
+    }
+    everConnectedRef.current = true;
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!isConnected || attemptedAutoAuthRef.current) return;
+    tryAutoAuthenticate();
+  }, [isConnected, tryAutoAuthenticate]);
 
   useEffect(() => {
     if (!lastMessage) return;
@@ -114,12 +155,22 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
           )
         );
         break;
-      case "peer-disconnected":
-        setStatus("error");
-        setErrorMessage("Host disconnected.");
+      case "peer-disconnected": {
+        // The host's own connection dropped — its process restarted, its
+        // network blipped, etc. The host app survives disconnects and
+        // keeps its session alive, so a paired device retries automatically
+        // instead of being left on a dead page; only show a dead-end error
+        // when there's no stored pairing to retry with.
+        setConnectionGeneration((generation) => generation + 1);
+        const willRetry = tryAutoAuthenticate();
+        if (!willRetry) {
+          setStatus("error");
+          setErrorMessage("Host disconnected.");
+        }
         break;
+      }
     }
-  }, [lastMessage, handleOffer, handleRemoteIceCandidate, send]);
+  }, [lastMessage, handleOffer, handleRemoteIceCandidate, send, tryAutoAuthenticate]);
 
   function handleJoin(sessionId: string) {
     setStatus("joining");
