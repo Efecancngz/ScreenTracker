@@ -102,11 +102,24 @@ class HostPeerConnection:
         self._pc = RTCPeerConnection(RTCConfiguration(iceServers=build_ice_servers()))
         self._pc.addTrack(ScreenCaptureTrack())
 
-        self._input_injector = InputInjector(screen_size or get_monitor_size())
+        try:
+            self._input_injector: InputInjector | None = InputInjector(
+                screen_size or get_monitor_size()
+            )
+        except Exception as exc:
+            # On a host without a usable display/permission bindings for
+            # pynput (e.g. Xlib.error.DisplayNameError on a headless Linux
+            # box), input control simply isn't available on this host —
+            # that must not prevent video-only Phase 1 viewing from working.
+            print(f"Input control unavailable: {exc}. Screen viewing will still work.")
+            self._input_injector = None
+
         self._input_channel = self._pc.createDataChannel("input")
 
         @self._input_channel.on("message")
         def _on_input_message(message: str) -> None:
+            if self._input_injector is None:
+                return
             try:
                 payload = json.loads(message)
             except (ValueError, TypeError):

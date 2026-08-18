@@ -206,3 +206,32 @@ def test_host_peer_connection_defaults_screen_size_from_monitor(monkeypatch):
     HostPeerConnection()
 
     assert captured_sizes == [(2560, 1440)]
+
+
+def test_host_peer_connection_survives_input_injector_construction_failure(monkeypatch, capsys):
+    def _raise(screen_size):
+        raise RuntimeError("no display available")
+
+    monkeypatch.setattr("screentracker_host.webrtc_peer.InputInjector", _raise)
+
+    # Must not raise: video-only viewing must keep working even if input
+    # control can't be initialized on this host.
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+
+    assert peer._input_injector is None
+    assert peer._input_channel.label == "input"
+    captured = capsys.readouterr()
+    assert "Input control unavailable" in captured.out
+
+
+def test_input_message_is_silently_dropped_when_injector_failed_to_construct(monkeypatch):
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.InputInjector",
+        lambda screen_size: (_ for _ in ()).throw(RuntimeError("no display available")),
+    )
+
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+    payload = {"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"}
+
+    # Must not crash even though there's no injector to forward the message to.
+    peer._input_channel.emit("message", json.dumps(payload))
