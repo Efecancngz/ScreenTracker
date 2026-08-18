@@ -22,6 +22,18 @@ rate_limiter = RateLimiter()
 _connections: dict[str, WebSocket] = {}
 # connection_id -> session_id, so a disconnect can find the peer to notify
 _connection_sessions: dict[str, str] = {}
+# host_id -> connection_id, so a returning paired device can find its host's
+# current session without ever typing a code
+_host_ids: dict[str, str] = {}
+
+_RELAYED_MESSAGE_TYPES = (
+    "offer",
+    "answer",
+    "ice-candidate",
+    "pair-approved",
+    "pair-rejected",
+    "authenticate-failed",
+)
 
 
 @app.websocket("/ws")
@@ -50,9 +62,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 await websocket.send_json(
                     {"type": "session-created", "session_id": session.session_id}
                 )
+            elif message.type == "register-host":
+                _host_ids[message.host_id] = connection_id
             elif message.type == "join-session":
-                await _handle_join(connection_id, message.session_id, websocket)
-            elif message.type in ("offer", "answer", "ice-candidate"):
+                await _handle_join(connection_id, message.session_id, message.device_id, websocket)
+            elif message.type == "authenticate":
+                await _handle_authenticate(connection_id, message, websocket)
+            elif message.type == "release-peer":
+                _handle_release_peer(connection_id)
+            elif message.type in _RELAYED_MESSAGE_TYPES:
                 await _relay_to_peer(connection_id, raw)
     except WebSocketDisconnect:
         await _handle_disconnect(connection_id)
@@ -63,7 +81,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await _handle_disconnect(connection_id)
 
 
-async def _handle_join(connection_id: str, session_id: str, websocket: WebSocket) -> None:
+async def _handle_join(
+    connection_id: str, session_id: str, device_id: str | None, websocket: WebSocket
+) -> None:
     client_key = _rate_limit_key(websocket)
 
     # A hammered lock counts as a failure too (and re-locks with a longer
@@ -73,23 +93,66 @@ async def _handle_join(connection_id: str, session_id: str, websocket: WebSocket
         await _handle_join_failure(websocket, client_key, "rate-limited")
         return
 
-    try:
-        session = session_manager.join_session(session_id, connection_id)
-    except SessionNotFoundError:
-        await _handle_join_failure(websocket, client_key, "not-found")
-        return
-    except SessionExpiredError:
-        await _handle_join_failure(websocket, client_key, "expired")
-        return
-    except SessionAlreadyClaimedError:
-        await _handle_join_failure(websocket, client_key, "already-claimed")
+    if not await _claim_session(session_id, connection_id, client_key, websocket):
         return
 
-    rate_limiter.record_success(client_key)
     _connection_sessions[connection_id] = session_id
-    host_ws = _connections.get(session.host_connection_id)
+    session = session_manager.get_session(session_id)
+    host_ws = _connections.get(session.host_connection_id) if session else None
     if host_ws is not None:
-        await host_ws.send_json({"type": "peer-joined"})
+        await host_ws.send_json(
+            {"type": "peer-joined", "device_id": device_id, "token": None}
+        )
+
+
+async def _handle_authenticate(connection_id: str, message, websocket: WebSocket) -> None:
+    client_key = _rate_limit_key(websocket)
+
+    if rate_limiter.seconds_until_unlocked(client_key) > 0:
+        await _handle_join_failure(websocket, client_key, "rate-limited")
+        return
+
+    host_connection_id = _host_ids.get(message.host_id)
+    session_id = _connection_sessions.get(host_connection_id) if host_connection_id else None
+    if session_id is None:
+        await _handle_join_failure(websocket, client_key, "not-found")
+        return
+
+    if not await _claim_session(session_id, connection_id, client_key, websocket):
+        return
+
+    _connection_sessions[connection_id] = session_id
+    host_ws = _connections.get(host_connection_id)
+    if host_ws is not None:
+        await host_ws.send_json(
+            {
+                "type": "peer-joined",
+                "device_id": message.device_id,
+                "token": message.token,
+            }
+        )
+
+
+async def _claim_session(
+    session_id: str, connection_id: str, client_key: str, websocket: WebSocket
+) -> bool:
+    """Try to claim session_id for connection_id. Sends the appropriate
+    session-expired reply and records a rate-limit failure on any rejection.
+    Returns True only if the claim succeeded."""
+    try:
+        session_manager.join_session(session_id, connection_id)
+    except SessionNotFoundError:
+        await _handle_join_failure(websocket, client_key, "not-found")
+        return False
+    except SessionExpiredError:
+        await _handle_join_failure(websocket, client_key, "expired")
+        return False
+    except SessionAlreadyClaimedError:
+        await _handle_join_failure(websocket, client_key, "already-claimed")
+        return False
+
+    rate_limiter.record_success(client_key)
+    return True
 
 
 async def _handle_join_failure(websocket: WebSocket, client_key: str, reason: str) -> None:
@@ -102,6 +165,12 @@ async def _handle_join_failure(websocket: WebSocket, client_key: str, reason: st
     if rate_limiter.should_kick(client_key):
         logger.warning("Closing connection from %s after repeated failed join attempts", client_key)
         await websocket.close()
+
+
+def _handle_release_peer(connection_id: str) -> None:
+    session_id = _connection_sessions.get(connection_id)
+    if session_id is not None:
+        session_manager.release_viewer(session_id)
 
 
 def _rate_limit_key(websocket: WebSocket) -> str:
@@ -119,6 +188,9 @@ async def _handle_disconnect(connection_id: str) -> None:
     peer_ws = _peer_websocket_for(connection_id)
     session_id = _connection_sessions.pop(connection_id, None)
     _connections.pop(connection_id, None)
+    for host_id, mapped_connection_id in list(_host_ids.items()):
+        if mapped_connection_id == connection_id:
+            del _host_ids[host_id]
 
     if peer_ws is not None:
         await peer_ws.send_json({"type": "peer-disconnected"})

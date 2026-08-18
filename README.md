@@ -24,6 +24,7 @@ cd viewer-app && npm install && npm run dev
 ```
 
 ## Documentation
+- [Deployment](docs/deployment.md)
 - [Architecture](docs/architecture.md)
 - [API spec](docs/api-spec.md)
 - [Design spec — Phase 1](docs/superpowers/specs/2026-08-17-remote-screen-view-design.md)
