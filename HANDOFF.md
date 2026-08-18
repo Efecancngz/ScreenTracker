@@ -1,10 +1,16 @@
 # Handoff — ScreenTracker
-Son güncelleme: 2026-08-18, güncelleyen: Claude Sonnet 5
+Son güncelleme: 2026-08-18 (akşam), güncelleyen: Claude Sonnet 5
 
 ## Şu an ne yapılıyor
 Faz 1 (MVP) `feat/screen-view-mvp` dalında tamamlandı, PR #1 açık:
-https://github.com/Efecancngz/ScreenTracker/pull/1. Local ağ üzerinden
-(aynı WiFi, PC↔telefon) uçtan uca doğrulandı.
+https://github.com/Efecancngz/ScreenTracker/pull/1 — **kullanıcı kendisi
+merge edecek**, bugünkü tüm testler onun tarafından elle doğrulandı.
+Local ağ üzerinden (aynı WiFi, PC↔telefon) uçtan uca doğrulandı.
+
+**Tailscale ile çapraz ağ bağlantısı da bugün doğrulandı** (PC evdeki
+WiFi'de, telefon mobil veride — ortak LAN yok): oturum kodu ile
+bağlanma, pairing onayı ve canlı ekran akışı hatasız çalıştı. Detay:
+`docs/deployment.md` → "Verified cross-network" notu.
 
 **Cihaz eşleştirme (device pairing) özelliği** ayrı bir plan olarak
 (`docs/superpowers/plans/2026-08-17-device-pairing-and-deployment.md`)
@@ -55,13 +61,26 @@ oluşmuyordu.
 aynı davranış. Tek satırlık, kök nedene yönelik düzeltme;
 `test_returns_false_when_stdin_has_no_data` testi eklendi.
 
+## Bugün bulunan ikinci hata: siyah ekran (artık düzeltildi)
+Kullanıcı telefonda viewer'ı LAN IP üzerinden düz HTTP ile açtığında
+tamamen siyah ekranla karşılaştı. Kök neden: `crypto.randomUUID()` sadece
+secure context'te (HTTPS veya `localhost`) var — LAN IP + HTTP secure
+context sayılmadığı için tarayıcı bu API'yi hiç sunmuyor,
+`getOrCreateDeviceId()` mount sırasında `TypeError` fırlatıyor, error
+boundary olmadığı için React hiçbir şey render edemiyordu. Düzeltme:
+`viewer-app/src/deviceIdentity.ts`'de `crypto.getRandomValues()` ile elle
+UUIDv4 üretimine fallback (bu API her context'te mevcut). Test eklendi,
+kullanıcı telefonda tekrar denedi: pairing onayı + canlı görüntü hatasız
+çalıştı. Commit `9fa420d`.
+
 ## Sıradaki adım
-Device pairing planı tamamlandı (10/10 task). Sıradaki mantıklı adım: bu
-değişiklikleri PR #1'e push edip (aynı branch üzerinde geliştirildi, ayrı
-bir PR değil), gerekirse whole-branch final review'ı device pairing
-commit'lerini de kapsayacak şekilde tekrar çalıştırmak. Sonrasında Faz 2
-(input kontrolü) veya Azure/cross-network deploy testi konuşulabilir —
-ikisi de şu an aktif değil.
+Device pairing planı tamamlandı (10/10 task), iki gerçek bug bulunup
+düzeltildi (EOFError crash + crypto.randomUUID siyah ekran), Tailscale ile
+çapraz ağ bağlantısı da doğrulandı. Kullanıcı PR #1'i kendisi merge
+edecek. Sonrasında konuşulabilecek, şu an aktif olmayan konular:
+- Faz 2 (dokunmatik/input kontrolü)
+- Azure deploy testi (Tailscale zaten birincil yol olarak seçilip test
+  edildiği için düşük öncelikli)
 
 ## Bilinmesi gerekenler
 - Azure for Students hesabı doğrulandı, kaynak oluşturma çalışıyor
@@ -103,7 +122,8 @@ SIGNALING_SERVER_HOST/PORT değişkenleri; conftest.py'deki sys.modules hack'i.
 - docs/api-spec.md, docs/architecture.md, docs/deployment.md
 - PR #1: https://github.com/Efecancngz/ScreenTracker/pull/1
 
-## Son 3 commit
+## Son commit'ler
+- 9fa420d fix: fall back to crypto.getRandomValues when randomUUID is unavailable
+- abce4c2 fix: handle non-interactive stdin in device pairing approval prompt
+- 858c7d8 docs: pause device pairing E2E verification, record repro details for tomorrow
 - 72be6c1 docs: add deployment guide and document device pairing
-- aed3e74 feat: auto-authenticate paired devices and handle pairing states in the viewer
-- 24c9fec feat: add viewer device identity and stored-pairing helpers
