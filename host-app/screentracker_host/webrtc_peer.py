@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fractions
+import json
 import os
 import time
 
@@ -19,7 +20,8 @@ from aiortc import (
 from aiortc.sdp import candidate_from_sdp
 from av import VideoFrame
 
-from screentracker_host.capture import capture_frame
+from screentracker_host.capture import capture_frame, get_monitor_size
+from screentracker_host.input_injector import InputInjector
 
 # A public STUN server is enough for most NATs; TURN is the relay fallback for
 # the symmetric-NAT cases where no direct path can be found.
@@ -96,9 +98,20 @@ def parse_ice_candidate(candidate_init: dict[str, Any]) -> RTCIceCandidate | Non
 
 
 class HostPeerConnection:
-    def __init__(self) -> None:
+    def __init__(self, screen_size: tuple[int, int] | None = None) -> None:
         self._pc = RTCPeerConnection(RTCConfiguration(iceServers=build_ice_servers()))
         self._pc.addTrack(ScreenCaptureTrack())
+
+        self._input_injector = InputInjector(screen_size or get_monitor_size())
+        self._input_channel = self._pc.createDataChannel("input")
+
+        @self._input_channel.on("message")
+        def _on_input_message(message: str) -> None:
+            try:
+                payload = json.loads(message)
+            except (ValueError, TypeError):
+                return
+            self._input_injector.handle_message(payload)
 
     async def create_offer(self) -> RTCSessionDescription:
         offer = await self._pc.createOffer()
