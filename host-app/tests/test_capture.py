@@ -17,12 +17,38 @@ def _make_mock_sct(monitor_size, grab_shape):
     return mock_sct
 
 
-def test_init_opens_exactly_one_mss_context():
+def test_init_does_not_construct_mss_context():
+    """mss keeps its GDI handles in threading.local(), populated only on the
+    thread that calls mss.mss(). ScreenCapturer is constructed on the event
+    loop thread but capture() runs on a separate executor worker thread, so
+    the context must not be built eagerly in __init__ -- only lazily, on
+    whatever thread first calls capture()."""
+    with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
+        ScreenCapturer()
+
+    mock_mss_cls.assert_not_called()
+
+
+def test_capture_constructs_mss_context_lazily_on_first_call_only():
     with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
         mock_mss_cls.return_value = _make_mock_sct((100, 50), (50, 100))
 
-        ScreenCapturer()
+        capturer = ScreenCapturer()
+        mock_mss_cls.assert_not_called()
 
+        with patch(
+            "screentracker_host.capture.np.array",
+            return_value=np.zeros((50, 100, 4), dtype=np.uint8),
+        ), patch(
+            "screentracker_host.capture.cv2.cvtColor",
+            return_value=np.zeros((50, 100, 3), dtype=np.uint8),
+        ):
+            capturer.capture()
+            mock_mss_cls.assert_called_once_with()
+
+            capturer.capture()
+
+    # Still just the one construction, from the first call.
     mock_mss_cls.assert_called_once_with()
 
 
@@ -121,10 +147,26 @@ def test_close_closes_underlying_mss_context():
         mock_sct = _make_mock_sct((100, 50), (50, 100))
         mock_mss_cls.return_value = mock_sct
 
-        capturer = ScreenCapturer()
-        capturer.close()
+        with patch(
+            "screentracker_host.capture.np.array",
+            return_value=np.zeros((50, 100, 4), dtype=np.uint8),
+        ), patch(
+            "screentracker_host.capture.cv2.cvtColor",
+            return_value=np.zeros((50, 100, 3), dtype=np.uint8),
+        ):
+            capturer = ScreenCapturer()
+            capturer.capture()  # lazily creates self._sct
+            capturer.close()
 
     mock_sct.close.assert_called_once_with()
+
+
+def test_close_is_a_safe_noop_when_capture_was_never_called():
+    with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
+        capturer = ScreenCapturer()
+        capturer.close()  # must not raise, must not construct mss.mss()
+
+    mock_mss_cls.assert_not_called()
 
 
 def test_get_monitor_size_returns_width_and_height_without_grabbing():

@@ -116,7 +116,14 @@ def _patch_immediate_loop(monkeypatch):
     run_in_executor runs the target function synchronously in place. Tests
     that need a deterministic time.monotonic() sequence would otherwise be
     perturbed by the real event loop's internal timer reads while it waits
-    on a real executor thread."""
+    on a real executor thread.
+
+    Only use this for tests asserting on the exact monkeypatched
+    time.monotonic() sequence (pacing/drift-guard); the genuine-concurrency
+    test (test_recv_does_not_block_the_event_loop_during_capture) must NOT
+    use it, since it needs a real executor thread for capture() to actually
+    run concurrently with other coroutines -- an immediate/synchronous loop
+    would defeat the exact behavior it's verifying."""
 
     class _ImmediateLoop:
         def run_in_executor(self, executor, func, *args):
@@ -275,6 +282,27 @@ async def test_recv_uses_screen_capturer_to_produce_frame(monkeypatch):
     assert calls == [track._capturer]
     assert video_frame.width == 6
     assert video_frame.height == 3
+
+
+def test_stop_shuts_down_executor_and_closes_capturer_via_executor(monkeypatch):
+    """ScreenCaptureTrack.stop() (called by aiortc's RTCPeerConnection.close()
+    via its sender tracks) must release the executor thread and the mss
+    GDI handles. close() has the same thread-affinity constraint as
+    capture(), so it must be dispatched through the executor rather than
+    called directly from the event loop thread."""
+    close_calls = []
+    monkeypatch.setattr(ScreenCapturer, "close", lambda self: close_calls.append(self))
+
+    track = ScreenCaptureTrack()
+    track._executor.shutdown = MagicMock(wraps=track._executor.shutdown)
+
+    track.stop()
+
+    assert close_calls == [track._capturer]
+    track._executor.shutdown.assert_called_once()
+    # close() must have been dispatched to (and finished on) the executor
+    # before shutdown was called -- not called directly on this thread.
+    assert track._executor._shutdown is True
 
 
 def test_host_peer_connection_creates_labeled_input_data_channel(monkeypatch):

@@ -23,11 +23,16 @@ class ScreenCapturer:
     video encoding a phone-sized viewer can't use anyway."""
 
     def __init__(self, monitor_index: int = 1, max_dim: int = MAX_CAPTURE_DIM) -> None:
-        self._sct = mss.mss()
+        # mss keeps its GDI handles in threading.local(), so the context must be
+        # created on the same thread that calls grab() -- here, the capture
+        # executor's single worker, not whatever thread constructed us.
+        self._sct: mss.mss | None = None
         self._monitor_index = monitor_index
         self._max_dim = max_dim
 
     def capture(self) -> Frame:
+        if self._sct is None:
+            self._sct = mss.mss()
         monitor = self._sct.monitors[self._monitor_index]
         raw = self._sct.grab(monitor)
         bgra = np.array(raw)
@@ -37,7 +42,11 @@ class ScreenCapturer:
         return Frame(width=width, height=height, data=np.ascontiguousarray(rgb))
 
     def close(self) -> None:
-        self._sct.close()
+        # Safe no-op if capture() was never called. Must run on the same
+        # thread that lazily created self._sct -- see the threading.local()
+        # note in __init__.
+        if self._sct is not None:
+            self._sct.close()
 
 
 def _downscale_if_needed(rgb: np.ndarray, max_dim: int) -> np.ndarray:

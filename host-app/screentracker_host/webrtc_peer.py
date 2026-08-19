@@ -72,6 +72,20 @@ class ScreenCaptureTrack(VideoStreamTrack):
 
         return video_frame
 
+    def stop(self) -> None:
+        """Called by aiortc (RTCPeerConnection.close() stops sender tracks)
+        to release capture resources. self._capturer.close() has the same
+        thread-affinity constraint as capture() -- mss's GDI handles live in
+        threading.local() on whichever thread lazily created them -- so it
+        must run on the executor's worker thread, not here on the event
+        loop thread. Dispatching close() through the executor is correct
+        (and cheap) even if capture() was never called, since close() is a
+        safe no-op when self._sct is still None.
+        """
+        super().stop()
+        self._executor.submit(self._capturer.close).result()
+        self._executor.shutdown(wait=True)
+
 
 def build_ice_servers() -> list[RTCIceServer]:
     """STUN baseline plus the optional self-hosted TURN relay from the env."""
