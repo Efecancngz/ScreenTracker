@@ -775,3 +775,38 @@ the cursor. Also spot-check that right-click (two-finger hold) and
 two-finger scroll still work exactly as before — this plan's Global
 Constraints require those paths to be byte-identical to pre-change
 behavior.
+
+Routing left-button pointer events through touch injection means the host
+OS now interprets that input as genuine touch, which brings Windows' own
+touch-gesture recognition into play in ways mouse simulation never
+triggered. The final whole-branch review flagged this as a real behavioral
+risk the automated suite cannot see — check all of these on-device too:
+
+- **Press-and-hold without moving** (start a drag, hold still ~1s before
+  moving): does Windows' native press-and-hold-for-context-menu gesture
+  fire a right-click menu instead of starting the drag? The single-finger
+  contract (hold = button stays down, no separate "hold" gesture) may not
+  survive going through real touch semantics.
+- **Hold perfectly still for 2+ seconds mid-drag** (down, move a little,
+  then stop sending moves entirely for 2s, then resume): the client only
+  emits `pointer-move` on actual finger movement, so a stationary hold
+  sends no messages at all. If Windows drops an injected touch contact
+  after a period of inactivity, the drag could die silently. If this
+  fails, the fix is a periodic keep-alive `move()` call at the last known
+  position while the button is held with no incoming messages.
+- **Drag to the extreme edge of the screen** (all the way to x=0 or the
+  right/bottom edge) and release there, then try a fresh left-click
+  afterward: confirm the initial drag/drop still works at the edge and
+  that left-click keeps working afterward (not stuck from an edge-clamped
+  coordinate the touch stack rejected).
+- **Text selection** in a document or browser (drag across text): confirm
+  it selects text rather than panning the view — panning-instead-of-selecting
+  is a plausible side effect of real touch semantics replacing mouse
+  semantics, and text selection is one of this plan's stated goals.
+- **Visible touch-feedback circles**: check whether Windows' touch
+  indicator rings appear on the host's physical screen during a drag, and
+  whether they show up in the video the viewer sees (`TouchInjector` uses
+  `TOUCH_FEEDBACK_DEFAULT`; if the rings are visually distracting in the
+  stream, switching to `TOUCH_FEEDBACK_NONE` is a one-constant fix, not
+  in scope for this plan unless the on-device check shows it's a real
+  problem).
