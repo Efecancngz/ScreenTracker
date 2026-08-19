@@ -1,3 +1,4 @@
+import asyncio
 import sys
 
 from pynput.keyboard import Key
@@ -5,6 +6,18 @@ from pynput import keyboard, mouse
 from pynput.mouse import Button
 
 WHEEL_SCROLL_DIVISOR = 100.0
+
+# Confirmed via real on-device testing: an injected touch contact times out
+# on Windows if left idle for too long between injections -- observed as
+# GetLastError=1460 (ERROR_TIMEOUT) on the first call after an ~875ms gap,
+# then GetLastError=87 (ERROR_INVALID_PARAMETER) on every subsequent call
+# for that contact, since it no longer exists as far as the OS is
+# concerned. The exact threshold isn't documented, so this interval is
+# chosen with a wide safety margin under the smallest gap observed to
+# fail. Re-injecting the last known position at this interval whenever the
+# client isn't sending fresh pointer-move messages (a deliberately slow
+# drag, or a brief pause mid-drag) keeps the contact alive.
+TOUCH_KEEPALIVE_INTERVAL_SECONDS = 0.06
 
 # Browser KeyboardEvent.key values for named keys -> pynput's Key enum.
 # Anything not in this map is treated as a literal single character
@@ -87,6 +100,10 @@ class InputInjector:
         # they're routed to the same sink pointer-down used.
         self._active_button: str | None = None
         self._touch_injector = self._build_touch_injector()
+        # Last pixel position injected via TouchInjector, and the pending
+        # keepalive timer re-injecting it -- see TOUCH_KEEPALIVE_INTERVAL_SECONDS.
+        self._touch_keepalive_pixels: tuple[int, int] | None = None
+        self._touch_keepalive_handle: asyncio.TimerHandle | None = None
 
     def _build_touch_injector(self) -> object | None:
         if sys.platform != "win32":
@@ -125,6 +142,8 @@ class InputInjector:
             self._active_button = button
             if button == "left" and self._touch_injector is not None:
                 self._touch_injector.down(*pixels)
+                self._touch_keepalive_pixels = pixels
+                self._schedule_touch_keepalive()
             else:
                 self._mouse.position = pixels
                 self._mouse.press(_BUTTON_MAP[button])
@@ -134,6 +153,8 @@ class InputInjector:
             )
             if self._active_button == "left" and self._touch_injector is not None:
                 self._touch_injector.move(*pixels)
+                self._touch_keepalive_pixels = pixels
+                self._schedule_touch_keepalive()
             else:
                 self._mouse.position = pixels
         elif msg_type == "pointer-up":
@@ -149,6 +170,8 @@ class InputInjector:
                     self._mouse.release(_BUTTON_MAP[button])
             finally:
                 self._active_button = None
+                self._touch_keepalive_pixels = None
+                self._cancel_touch_keepalive()
         elif msg_type == "wheel":
             dx, dy = wheel_delta_to_scroll_units(message.get("deltaX", 0), message.get("deltaY", 0))
             self._mouse.scroll(dx, dy)
@@ -156,3 +179,34 @@ class InputInjector:
             self._keyboard.press(resolve_key(message["key"]))
         elif msg_type == "key-up":
             self._keyboard.release(resolve_key(message["key"]))
+
+    def _schedule_touch_keepalive(self) -> None:
+        self._cancel_touch_keepalive()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop (e.g. a synchronous unit test, or a host
+            # process not driven by asyncio) -- keepalive is a no-op.
+            # In production HostPeerConnection always runs inside
+            # asyncio.run(), so this always succeeds there.
+            return
+        self._touch_keepalive_handle = loop.call_later(
+            TOUCH_KEEPALIVE_INTERVAL_SECONDS, self._touch_keepalive_tick
+        )
+
+    def _cancel_touch_keepalive(self) -> None:
+        if self._touch_keepalive_handle is not None:
+            self._touch_keepalive_handle.cancel()
+            self._touch_keepalive_handle = None
+
+    def _touch_keepalive_tick(self) -> None:
+        self._touch_keepalive_handle = None
+        if self._touch_keepalive_pixels is None or self._touch_injector is None:
+            return
+        try:
+            self._touch_injector.move(*self._touch_keepalive_pixels)
+        except RuntimeError:
+            # Best-effort: a real pointer-move or pointer-up will surface
+            # any persistent failure through the usual handle_message path.
+            pass
+        self._schedule_touch_keepalive()

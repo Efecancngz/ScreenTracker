@@ -321,6 +321,100 @@ def test_pointer_up_clears_active_button_even_when_touch_injector_up_raises(inje
     assert mock_mouse.position == (192, 108)
 
 
+@pytest.mark.asyncio
+async def test_left_pointer_down_schedules_touch_keepalive_when_loop_available(injector):
+    """Confirmed via real on-device testing: an injected touch contact
+    times out (GetLastError=1460 then 87 on every subsequent call) if
+    left idle for too long between injections -- observed with an
+    ~875ms gap between a pointer-down and its first pointer-move. A
+    keepalive timer must be scheduled on left pointer-down so the
+    contact never goes stale even if the client sends no further
+    pointer-move for a while (a deliberate slow drag, or a brief pause
+    mid-drag)."""
+    instance, _, _, _ = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+    assert instance._touch_keepalive_handle is not None
+
+
+def test_touch_keepalive_tick_reinjects_last_known_position(injector):
+    from screentracker_host.touch_injector import POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UPDATE
+
+    instance, _, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+    call_count_before = mock_user32.InjectTouchInput.call_count
+
+    instance._touch_keepalive_tick()
+
+    assert mock_user32.InjectTouchInput.call_count == call_count_before + 1
+    contact = _touch_contact(mock_user32)
+    assert contact.pointerInfo.pointerFlags == (
+        POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+    )
+    assert contact.pointerInfo.ptPixelLocation.x == 960
+    assert contact.pointerInfo.ptPixelLocation.y == 540
+
+
+def test_touch_keepalive_tick_uses_latest_position_after_a_real_move(injector):
+    instance, _, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+    instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.9})
+
+    instance._touch_keepalive_tick()
+
+    contact = _touch_contact(mock_user32)
+    assert contact.pointerInfo.ptPixelLocation.x == 192
+    assert contact.pointerInfo.ptPixelLocation.y == 972
+
+
+def test_touch_keepalive_tick_is_a_no_op_after_pointer_up(injector):
+    instance, _, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+    instance.handle_message({"type": "pointer-up", "x": 0.5, "y": 0.5, "button": "left"})
+    call_count_before = mock_user32.InjectTouchInput.call_count
+
+    instance._touch_keepalive_tick()
+
+    assert mock_user32.InjectTouchInput.call_count == call_count_before
+
+
+@pytest.mark.asyncio
+async def test_pointer_up_cancels_pending_touch_keepalive(injector):
+    instance, _, _, _ = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+    assert instance._touch_keepalive_handle is not None
+
+    instance.handle_message({"type": "pointer-up", "x": 0.5, "y": 0.5, "button": "left"})
+
+    assert instance._touch_keepalive_handle is None
+
+
+@pytest.mark.asyncio
+async def test_touch_keepalive_fires_on_its_own_via_the_real_event_loop_timer(injector):
+    """Proves the scheduled callback actually re-arms itself and
+    executes through a live event loop -- not just that a handle gets
+    created (test_left_pointer_down_schedules_touch_keepalive_when_loop_available)
+    or that the tick method works when called directly
+    (test_touch_keepalive_tick_reinjects_last_known_position)."""
+    import asyncio
+
+    from screentracker_host.input_injector import TOUCH_KEEPALIVE_INTERVAL_SECONDS
+
+    instance, _, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+    call_count_before = mock_user32.InjectTouchInput.call_count
+
+    await asyncio.sleep(TOUCH_KEEPALIVE_INTERVAL_SECONDS * 2)
+
+    assert mock_user32.InjectTouchInput.call_count > call_count_before
+
+
 def test_host_peer_connection_survives_touch_injector_construction_failure_message():
     """The fallback message is printed (not silently swallowed) so a
     developer reading host app logs can see why drag-and-drop won't
