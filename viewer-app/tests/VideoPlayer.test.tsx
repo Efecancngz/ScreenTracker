@@ -58,6 +58,27 @@ describe("VideoPlayer", () => {
     expect(screen.getByText(/input active/i)).toBeInTheDocument();
   });
 
+  describe("click mode toggle", () => {
+    it("defaults to left-click mode", () => {
+      const fakeStream = {} as MediaStream;
+      render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
+
+      expect(screen.getByRole("button", { name: /left.?click/i })).toBeInTheDocument();
+    });
+
+    it("switches to right-click mode when clicked, and back to left on a second click", async () => {
+      const user = userEvent.setup();
+      const fakeStream = {} as MediaStream;
+      render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
+
+      await user.click(screen.getByRole("button", { name: /left.?click/i }));
+      expect(screen.getByRole("button", { name: /right.?click/i })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /right.?click/i }));
+      expect(screen.getByRole("button", { name: /left.?click/i })).toBeInTheDocument();
+    });
+  });
+
   describe("fullscreen toggle", () => {
     afterEach(() => {
       vi.restoreAllMocks();

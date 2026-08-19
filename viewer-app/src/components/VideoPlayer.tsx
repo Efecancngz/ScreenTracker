@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useInputControl } from "../hooks/useInputControl";
+import { useInputControl, type PrimaryButton } from "../hooks/useInputControl";
 import styles from "./VideoPlayer.module.css";
 
 interface VideoPlayerProps {
@@ -12,6 +12,11 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [inputReady, setInputReady] = useState(inputChannel?.readyState === "open");
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Which button single-finger press/drag/release simulates. An explicit
+  // mode toggle instead of inferring intent from touch timing/finger count
+  // -- simpler to use and to reason about than the two-finger-hold gesture
+  // this replaced.
+  const [primaryButton, setPrimaryButton] = useState<PrimaryButton>("left");
 
   useEffect(() => {
     if (videoRef.current) {
@@ -19,7 +24,7 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
     }
   }, [stream]);
 
-  useInputControl({ videoRef, channel: inputChannel });
+  useInputControl({ videoRef, channel: inputChannel, primaryButton });
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -89,6 +94,13 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
       <span className={inputReady ? `${styles.inputStatus} ${styles.inputReady}` : styles.inputStatus}>
         {inputReady ? "Input active" : "Input connecting…"}
       </span>
+      <button
+        type="button"
+        className={styles.modeButton}
+        onClick={() => setPrimaryButton((prev) => (prev === "left" ? "right" : "left"))}
+      >
+        {primaryButton === "left" ? "🖱️ Left-click mode" : "🖱️ Right-click mode"}
+      </button>
       <button type="button" className={styles.fullscreenButton} onClick={() => void toggleFullscreen()}>
         {isFullscreen ? "⤡ Exit fullscreen" : "⛶ Fullscreen"}
       </button>
