@@ -17,7 +17,7 @@ contact (pointerId 0) via InitializeTouchInjection + InjectTouchInput.
 import ctypes
 from ctypes import wintypes
 
-user32 = ctypes.windll.user32
+user32 = ctypes.WinDLL("user32", use_last_error=True)
 
 PT_TOUCH = 2
 
@@ -78,10 +78,17 @@ def _make_contact(x: int, y: int, flags: int) -> POINTER_TOUCH_INFO:
     info.pointerInfo.ptPixelLocation.x = x
     info.pointerInfo.ptPixelLocation.y = y
     info.touchMask = TOUCH_MASK_CONTACTAREA
-    info.rcContact.left = x - _CONTACT_HALF_WIDTH
-    info.rcContact.right = x + _CONTACT_HALF_WIDTH
-    info.rcContact.top = y - _CONTACT_HALF_WIDTH
-    info.rcContact.bottom = y + _CONTACT_HALF_WIDTH
+    # Clamp defensively: normalize_to_pixels() (in input_injector.py) can
+    # legitimately return edge coordinates like x=0, and a rect that goes
+    # negative near the top-left edge can cause InjectTouchInput to reject
+    # the call, leaving a stuck touch contact (every subsequent down()
+    # then fails too, until process restart). Only the lower bound needs
+    # clamping here -- InjectTouchInput is generally tolerant of a contact
+    # rect that extends past the screen's right/bottom edge.
+    info.rcContact.left = max(0, x - _CONTACT_HALF_WIDTH)
+    info.rcContact.right = max(0, x + _CONTACT_HALF_WIDTH)
+    info.rcContact.top = max(0, y - _CONTACT_HALF_WIDTH)
+    info.rcContact.bottom = max(0, y + _CONTACT_HALF_WIDTH)
     return info
 
 

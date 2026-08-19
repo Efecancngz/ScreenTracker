@@ -273,6 +273,54 @@ def test_left_pointer_down_uses_pynput_on_non_windows(injector_no_touch):
     mock_mouse.press.assert_called_once()
 
 
+def test_build_touch_injector_survives_attribute_error_from_missing_touch_injection_api():
+    """Important #1: on a Windows build where InitializeTouchInjection
+    isn't a user32.dll export (older/embedded Windows), ctypes raises
+    AttributeError, not RuntimeError, the first time that attribute is
+    accessed. _build_touch_injector() must swallow that too and fall
+    back to pynput rather than let it propagate out of __init__ and
+    have HostPeerConnection kill ALL input control."""
+    with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
+         patch("screentracker_host.input_injector.keyboard.Controller"), \
+         patch("screentracker_host.input_injector.sys.platform", "win32"), \
+         patch(
+             "screentracker_host.touch_injector.TouchInjector",
+             side_effect=AttributeError(
+                 "function 'InitializeTouchInjection' not found"
+             ),
+         ):
+        mock_mouse = MagicMock()
+        mock_mouse_cls.return_value = mock_mouse
+
+        instance = InputInjector(screen_size=(1920, 1080))
+        instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+        assert instance._touch_injector is None
+        assert mock_mouse.position == (960, 540)
+        mock_mouse.press.assert_called_once()
+
+
+def test_pointer_up_clears_active_button_even_when_touch_injector_up_raises(injector):
+    """Important #2: if TouchInjector.up() raises (a real, designed-for
+    failure mode -- InjectTouchInput can return false), _active_button
+    must still be cleared, otherwise every subsequent bare pointer-move
+    keeps trying to route through the (possibly broken) touch injector
+    forever and never falls back to pynput."""
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+    with patch.object(instance._touch_injector, "up", side_effect=RuntimeError("boom")):
+        instance.handle_message({"type": "pointer-up", "x": 0.25, "y": 0.75, "button": "left"})
+
+    assert instance._active_button is None
+
+    call_count_before = mock_user32.InjectTouchInput.call_count
+    instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.1})
+    assert mock_user32.InjectTouchInput.call_count == call_count_before
+    assert mock_mouse.position == (192, 108)
+
+
 def test_host_peer_connection_survives_touch_injector_construction_failure_message():
     """The fallback message is printed (not silently swallowed) so a
     developer reading host app logs can see why drag-and-drop won't

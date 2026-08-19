@@ -88,14 +88,15 @@ class InputInjector:
         self._active_button: str | None = None
         self._touch_injector = self._build_touch_injector()
 
-    def _build_touch_injector(self):
+    def _build_touch_injector(self) -> object | None:
         if sys.platform != "win32":
             return None
-        from screentracker_host.touch_injector import TouchInjector
 
         try:
+            from screentracker_host.touch_injector import TouchInjector
+
             return TouchInjector()
-        except RuntimeError as exc:
+        except Exception as exc:
             print(
                 f"Touch injection unavailable ({exc}); drag-and-drop may not "
                 "work correctly, but clicks and other input will still work."
@@ -140,12 +141,14 @@ class InputInjector:
             pixels = normalize_to_pixels(
                 message["x"], message["y"], self._screen_width, self._screen_height
             )
-            if button == "left" and self._touch_injector is not None:
-                self._touch_injector.up(*pixels)
-            else:
-                self._mouse.position = pixels
-                self._mouse.release(_BUTTON_MAP[button])
-            self._active_button = None
+            try:
+                if button == "left" and self._touch_injector is not None:
+                    self._touch_injector.up(*pixels)
+                else:
+                    self._mouse.position = pixels
+                    self._mouse.release(_BUTTON_MAP[button])
+            finally:
+                self._active_button = None
         elif msg_type == "wheel":
             dx, dy = wheel_delta_to_scroll_units(message.get("deltaX", 0), message.get("deltaY", 0))
             self._mouse.scroll(dx, dy)

@@ -105,3 +105,39 @@ def test_inject_raises_runtime_error_when_inject_touch_input_fails(mock_user32):
 
     with pytest.raises(RuntimeError, match="InjectTouchInput failed"):
         injector.down(1, 1)
+
+
+def test_down_at_top_left_edge_produces_no_negative_rect_contact(mock_user32):
+    """Important #3: normalize_to_pixels() can legitimately hand back
+    x=0, y=0. The old rcContact math (x - _CONTACT_HALF_WIDTH) would
+    go negative there, which InjectTouchInput can reject and leave a
+    stuck contact -- every subsequent down() then fails until process
+    restart. rcContact fields must never go below zero."""
+    injector = TouchInjector()
+
+    injector.down(0, 0)
+
+    contact = mock_user32.InjectTouchInput.call_args[0][1].contents
+    assert contact.rcContact.left >= 0
+    assert contact.rcContact.top >= 0
+    assert contact.rcContact.right >= 0
+    assert contact.rcContact.bottom >= 0
+
+
+def test_user32_is_loaded_with_use_last_error_for_diagnostics():
+    """Important #4: ctypes.windll.user32 never populates the slot
+    ctypes.get_last_error() reads, so every RuntimeError in this module
+    always reported GetLastError=0. Loading via WinDLL(..., use_last_error=True)
+    is required for that diagnostic to be meaningful."""
+    import importlib
+
+    with patch("ctypes.WinDLL") as mock_windll:
+        import screentracker_host.touch_injector as touch_injector_module
+
+        importlib.reload(touch_injector_module)
+
+        mock_windll.assert_called_once_with("user32", use_last_error=True)
+
+        # Restore the module to its normal (mocked-by-fixture-friendly) state
+        # for any tests that run after this one in the same session.
+        importlib.reload(touch_injector_module)
