@@ -56,8 +56,32 @@ from screentracker_host.input_injector import InputInjector
 
 @pytest.fixture
 def injector():
+    """Default fixture: TouchInjector constructs successfully, so
+    left-button pointer events route through it. Use the
+    `injector_no_touch` fixture below for the pynput-fallback cases."""
     with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
-         patch("screentracker_host.input_injector.keyboard.Controller") as mock_keyboard_cls:
+         patch("screentracker_host.input_injector.keyboard.Controller") as mock_keyboard_cls, \
+         patch("screentracker_host.input_injector.sys.platform", "win32"), \
+         patch("screentracker_host.touch_injector.user32") as mock_user32:
+        mock_user32.InitializeTouchInjection.return_value = True
+        mock_user32.InjectTouchInput.return_value = True
+        mock_mouse = MagicMock()
+        mock_keyboard = MagicMock()
+        mock_mouse_cls.return_value = mock_mouse
+        mock_keyboard_cls.return_value = mock_keyboard
+        instance = InputInjector(screen_size=(1920, 1080))
+        yield instance, mock_mouse, mock_keyboard, mock_user32
+
+
+@pytest.fixture
+def injector_no_touch():
+    """Fixture for the pynput-fallback path: sys.platform isn't win32,
+    so InputInjector never attempts to construct a TouchInjector at
+    all, and every pointer path (left AND right) uses pynput -- this
+    is also representative of "TouchInjector construction failed"."""
+    with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
+         patch("screentracker_host.input_injector.keyboard.Controller") as mock_keyboard_cls, \
+         patch("screentracker_host.input_injector.sys.platform", "linux"):
         mock_mouse = MagicMock()
         mock_keyboard = MagicMock()
         mock_mouse_cls.return_value = mock_mouse
@@ -66,8 +90,182 @@ def injector():
         yield instance, mock_mouse, mock_keyboard
 
 
-def test_pointer_down_moves_then_presses(injector):
-    instance, mock_mouse, _ = injector
+def _touch_contact(mock_user32):
+    """Reads back the POINTER_TOUCH_INFO most recently passed to the
+    mocked InjectTouchInput -- same technique test_touch_injector.py
+    uses."""
+    return mock_user32.InjectTouchInput.call_args[0][1].contents
+
+
+def test_left_pointer_down_goes_through_touch_injector(injector):
+    from screentracker_host.touch_injector import (
+        POINTER_FLAG_DOWN,
+        POINTER_FLAG_INCONTACT,
+        POINTER_FLAG_INRANGE,
+    )
+
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+    contact = _touch_contact(mock_user32)
+    assert contact.pointerInfo.pointerFlags == (
+        POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+    )
+    assert contact.pointerInfo.ptPixelLocation.x == 960
+    assert contact.pointerInfo.ptPixelLocation.y == 540
+    mock_mouse.press.assert_not_called()
+
+
+def test_left_pointer_move_goes_through_touch_injector_after_left_down(injector):
+    from screentracker_host.touch_injector import (
+        POINTER_FLAG_INCONTACT,
+        POINTER_FLAG_INRANGE,
+        POINTER_FLAG_UPDATE,
+    )
+
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+    instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.9})
+
+    contact = _touch_contact(mock_user32)
+    assert contact.pointerInfo.pointerFlags == (
+        POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
+    )
+    assert contact.pointerInfo.ptPixelLocation.x == 192
+    assert contact.pointerInfo.ptPixelLocation.y == 972
+    mock_mouse.press.assert_not_called()
+
+
+def test_left_pointer_up_goes_through_touch_injector_and_clears_active_button(injector):
+    from screentracker_host.touch_injector import POINTER_FLAG_UP
+
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+    instance.handle_message({"type": "pointer-up", "x": 0.25, "y": 0.75, "button": "left"})
+
+    contact = _touch_contact(mock_user32)
+    assert contact.pointerInfo.pointerFlags == POINTER_FLAG_UP
+    assert contact.pointerInfo.ptPixelLocation.x == 480
+    assert contact.pointerInfo.ptPixelLocation.y == 810
+    mock_mouse.release.assert_not_called()
+
+    # A pointer-move after pointer-up (no active gesture) falls back to
+    # the pynput path, proving _active_button was actually cleared.
+    call_count_before = mock_user32.InjectTouchInput.call_count
+    instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.1})
+    assert mock_user32.InjectTouchInput.call_count == call_count_before
+    assert mock_mouse.position == (192, 108)
+
+
+def test_right_pointer_down_still_uses_pynput_even_with_touch_injector_available(injector):
+    from pynput.mouse import Button
+
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.0, "y": 0.0, "button": "right"})
+
+    mock_mouse.press.assert_called_once_with(Button.right)
+    assert mock_mouse.position == (0, 0)
+    mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_right_pointer_move_still_uses_pynput_after_right_down(injector):
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.0, "y": 0.0, "button": "right"})
+    instance.handle_message({"type": "pointer-move", "x": 0.5, "y": 0.5})
+
+    assert mock_mouse.position == (960, 540)
+    mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_right_pointer_up_still_uses_pynput(injector):
+    from pynput.mouse import Button
+
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.0, "y": 0.0, "button": "right"})
+    instance.handle_message({"type": "pointer-up", "x": 0.25, "y": 0.75, "button": "right"})
+
+    mock_mouse.release.assert_called_once_with(Button.right)
+    assert mock_mouse.position == (480, 810)
+    mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_wheel_still_scrolls_via_pynput(injector):
+    instance, mock_mouse, _, mock_user32 = injector
+
+    instance.handle_message({"type": "wheel", "deltaX": 0, "deltaY": 200})
+
+    mock_mouse.scroll.assert_called_once_with(0, -2)
+    mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_key_down_still_presses_via_pynput(injector):
+    from pynput.keyboard import Key
+
+    instance, _, mock_keyboard, mock_user32 = injector
+
+    instance.handle_message({"type": "key-down", "key": "Enter"})
+
+    mock_keyboard.press.assert_called_once_with(Key.enter)
+    mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_key_up_still_releases_via_pynput(injector):
+    instance, _, mock_keyboard, mock_user32 = injector
+
+    instance.handle_message({"type": "key-up", "key": "a"})
+
+    mock_keyboard.release.assert_called_once_with("a")
+    mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_unknown_message_type_is_ignored(injector):
+    instance, mock_mouse, mock_keyboard, mock_user32 = injector
+
+    instance.handle_message({"type": "not-a-real-type"})
+
+    mock_mouse.press.assert_not_called()
+    mock_keyboard.press.assert_not_called()
+    mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_exception_during_dispatch_is_caught_and_warned_once(injector, capsys):
+    instance, mock_mouse, _, _ = injector
+    mock_mouse.press.side_effect = RuntimeError("boom")
+
+    # Use the right button so this exercises the pynput press() path
+    # (left goes through TouchInjector, which doesn't call mock_mouse.press).
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "right"})
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "right"})
+
+    captured = capsys.readouterr()
+    assert captured.out.count("Accessibility") == 1
+
+
+def test_left_pointer_down_falls_back_to_pynput_when_touch_injector_construction_fails():
+    with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
+         patch("screentracker_host.input_injector.keyboard.Controller"), \
+         patch("screentracker_host.input_injector.sys.platform", "win32"), \
+         patch("screentracker_host.touch_injector.user32") as mock_user32:
+        mock_user32.InitializeTouchInjection.return_value = False  # construction fails
+        mock_mouse = MagicMock()
+        mock_mouse_cls.return_value = mock_mouse
+
+        instance = InputInjector(screen_size=(1920, 1080))
+        instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+        assert mock_mouse.position == (960, 540)
+        mock_mouse.press.assert_called_once()
+        mock_user32.InjectTouchInput.assert_not_called()
+
+
+def test_left_pointer_down_uses_pynput_on_non_windows(injector_no_touch):
+    instance, mock_mouse, _ = injector_no_touch
 
     instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
 
@@ -75,78 +273,20 @@ def test_pointer_down_moves_then_presses(injector):
     mock_mouse.press.assert_called_once()
 
 
-def test_pointer_down_right_button_presses_right(injector):
-    from pynput.mouse import Button
+def test_host_peer_connection_survives_touch_injector_construction_failure_message():
+    """The fallback message is printed (not silently swallowed) so a
+    developer reading host app logs can see why drag-and-drop won't
+    work correctly on this host."""
+    with patch("screentracker_host.input_injector.mouse.Controller"), \
+         patch("screentracker_host.input_injector.keyboard.Controller"), \
+         patch("screentracker_host.input_injector.sys.platform", "win32"), \
+         patch("screentracker_host.touch_injector.user32") as mock_user32, \
+         patch("builtins.print") as mock_print:
+        mock_user32.InitializeTouchInjection.return_value = False
 
-    instance, mock_mouse, _ = injector
+        InputInjector(screen_size=(1920, 1080))
 
-    instance.handle_message({"type": "pointer-down", "x": 0.0, "y": 0.0, "button": "right"})
-
-    mock_mouse.press.assert_called_once_with(Button.right)
-
-
-def test_pointer_up_releases(injector):
-    from pynput.mouse import Button
-
-    instance, mock_mouse, _ = injector
-
-    instance.handle_message({"type": "pointer-up", "x": 0.25, "y": 0.75, "button": "left"})
-
-    mock_mouse.release.assert_called_once_with(Button.left)
-    assert mock_mouse.position == (480, 810)
-
-
-def test_pointer_move_only_repositions(injector):
-    instance, mock_mouse, _ = injector
-
-    instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.9})
-
-    assert mock_mouse.position == (192, 972)
-    mock_mouse.press.assert_not_called()
-    mock_mouse.release.assert_not_called()
-
-
-def test_wheel_scrolls(injector):
-    instance, mock_mouse, _ = injector
-
-    instance.handle_message({"type": "wheel", "deltaX": 0, "deltaY": 200})
-
-    mock_mouse.scroll.assert_called_once_with(0, -2)
-
-
-def test_key_down_presses_resolved_key(injector):
-    from pynput.keyboard import Key
-
-    instance, _, mock_keyboard = injector
-
-    instance.handle_message({"type": "key-down", "key": "Enter"})
-
-    mock_keyboard.press.assert_called_once_with(Key.enter)
-
-
-def test_key_up_releases_resolved_key(injector):
-    instance, _, mock_keyboard = injector
-
-    instance.handle_message({"type": "key-up", "key": "a"})
-
-    mock_keyboard.release.assert_called_once_with("a")
-
-
-def test_unknown_message_type_is_ignored(injector):
-    instance, mock_mouse, mock_keyboard = injector
-
-    instance.handle_message({"type": "not-a-real-type"})
-
-    mock_mouse.press.assert_not_called()
-    mock_keyboard.press.assert_not_called()
-
-
-def test_exception_during_dispatch_is_caught_and_warned_once(injector, capsys):
-    instance, mock_mouse, _ = injector
-    mock_mouse.press.side_effect = RuntimeError("boom")
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-
-    captured = capsys.readouterr()
-    assert captured.out.count("Accessibility") == 1
+        assert any(
+            "Touch injection unavailable" in str(call.args[0])
+            for call in mock_print.call_args_list
+        )

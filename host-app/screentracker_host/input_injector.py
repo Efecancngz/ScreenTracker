@@ -1,3 +1,5 @@
+import sys
+
 from pynput.keyboard import Key
 from pynput import keyboard, mouse
 from pynput.mouse import Button
@@ -57,16 +59,48 @@ _BUTTON_MAP: dict[str, Button] = {"left": Button.left, "right": Button.right}
 
 
 class InputInjector:
-    """Translates DataChannel input messages into OS-level events via pynput.
-    Never raises: a bad message or a permissions error (e.g. missing macOS
-    Accessibility access) is caught and logged once, not left to crash the
-    host app's main loop."""
+    """Translates DataChannel input messages into OS-level events.
+
+    Left-button pointer events (drag-and-drop, clicks) go through
+    Windows' Touch Injection API when available -- pynput's
+    SetCursorPos/SendInput-based mouse simulation moves the cursor
+    correctly but isn't recognized by Windows Explorer's drag-and-drop
+    (DoDragDrop), confirmed via isolated testing (see
+    docs/superpowers/specs/2026-08-19-touch-injection-drag-fix-design.md).
+    Right-click, scroll, and keyboard stay on pynput -- they're
+    synthetic gestures the client already translates into distinct
+    actions, not literal touch replication.
+
+    Never raises: a bad message or a permissions error (e.g. missing
+    macOS Accessibility access) is caught and logged once, not left to
+    crash the host app's main loop.
+    """
 
     def __init__(self, screen_size: tuple[int, int]) -> None:
         self._screen_width, self._screen_height = screen_size
         self._mouse = mouse.Controller()
         self._keyboard = keyboard.Controller()
         self._warned = False
+        # Which button (if any) is currently "held" from the last
+        # pointer-down that hasn't yet seen its matching pointer-up.
+        # pointer-move messages carry no button field, so this is how
+        # they're routed to the same sink pointer-down used.
+        self._active_button: str | None = None
+        self._touch_injector = self._build_touch_injector()
+
+    def _build_touch_injector(self):
+        if sys.platform != "win32":
+            return None
+        from screentracker_host.touch_injector import TouchInjector
+
+        try:
+            return TouchInjector()
+        except RuntimeError as exc:
+            print(
+                f"Touch injection unavailable ({exc}); drag-and-drop may not "
+                "work correctly, but clicks and other input will still work."
+            )
+            return None
 
     def handle_message(self, message: dict) -> None:
         try:
@@ -83,13 +117,35 @@ class InputInjector:
     def _dispatch(self, message: dict) -> None:
         msg_type = message.get("type")
         if msg_type == "pointer-down":
-            self._move(message["x"], message["y"])
-            self._mouse.press(_BUTTON_MAP[message.get("button", "left")])
+            button = message.get("button", "left")
+            pixels = normalize_to_pixels(
+                message["x"], message["y"], self._screen_width, self._screen_height
+            )
+            self._active_button = button
+            if button == "left" and self._touch_injector is not None:
+                self._touch_injector.down(*pixels)
+            else:
+                self._mouse.position = pixels
+                self._mouse.press(_BUTTON_MAP[button])
         elif msg_type == "pointer-move":
-            self._move(message["x"], message["y"])
+            pixels = normalize_to_pixels(
+                message["x"], message["y"], self._screen_width, self._screen_height
+            )
+            if self._active_button == "left" and self._touch_injector is not None:
+                self._touch_injector.move(*pixels)
+            else:
+                self._mouse.position = pixels
         elif msg_type == "pointer-up":
-            self._move(message["x"], message["y"])
-            self._mouse.release(_BUTTON_MAP[message.get("button", "left")])
+            button = message.get("button", "left")
+            pixels = normalize_to_pixels(
+                message["x"], message["y"], self._screen_width, self._screen_height
+            )
+            if button == "left" and self._touch_injector is not None:
+                self._touch_injector.up(*pixels)
+            else:
+                self._mouse.position = pixels
+                self._mouse.release(_BUTTON_MAP[button])
+            self._active_button = None
         elif msg_type == "wheel":
             dx, dy = wheel_delta_to_scroll_units(message.get("deltaX", 0), message.get("deltaY", 0))
             self._mouse.scroll(dx, dy)
@@ -97,6 +153,3 @@ class InputInjector:
             self._keyboard.press(resolve_key(message["key"]))
         elif msg_type == "key-up":
             self._keyboard.release(resolve_key(message["key"]))
-
-    def _move(self, x: float, y: float) -> None:
-        self._mouse.position = normalize_to_pixels(x, y, self._screen_width, self._screen_height)
