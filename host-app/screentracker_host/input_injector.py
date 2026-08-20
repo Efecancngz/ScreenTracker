@@ -206,7 +206,23 @@ class InputInjector:
         try:
             self._touch_injector.move(*self._touch_keepalive_pixels)
         except RuntimeError:
-            # Best-effort: a real pointer-move or pointer-up will surface
-            # any persistent failure through the usual handle_message path.
-            pass
+            # The contact this chain was keeping alive is gone, so there is
+            # nothing left to keep alive. Re-arming regardless produced an
+            # endless run of failing injections (GetLastError=87) that
+            # outlived the gesture -- and, worse, kept dragging pointer id 0
+            # back to a stale position while a *later* gesture was using it,
+            # so real drags oscillated between two points and Windows read
+            # them as flicks instead of a drag. Let the chain die; a real
+            # pointer-move or pointer-up starts a fresh one.
+            self._touch_keepalive_pixels = None
+            return
         self._schedule_touch_keepalive()
+
+    def close(self) -> None:
+        """Stop this injector for good. A new InputInjector is built per
+        peer connection and the host replaces that connection on every
+        peer-joined, so without this an injector discarded mid-gesture
+        keeps its keepalive chain running forever against a pointer id the
+        next connection is already using."""
+        self._touch_keepalive_pixels = None
+        self._cancel_touch_keepalive()

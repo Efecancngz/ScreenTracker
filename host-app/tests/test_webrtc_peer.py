@@ -384,3 +384,19 @@ def test_input_message_is_silently_dropped_when_injector_failed_to_construct(mon
 
     # Must not crash even though there's no injector to forward the message to.
     peer._input_channel.emit("message", json.dumps(payload))
+
+
+@pytest.mark.asyncio
+async def test_close_stops_the_input_injector():
+    """The host replaces its peer connection on every peer-joined. If
+    closing one leaves its InputInjector running, that injector's touch
+    keepalive keeps injecting on pointer id 0 while the *next*
+    connection is using it, and drags oscillate between two positions."""
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+    injector = peer._input_injector
+    assert injector is not None
+    injector.close = MagicMock()
+
+    await peer.close()
+
+    injector.close.assert_called_once()

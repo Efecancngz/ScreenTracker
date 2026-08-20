@@ -167,4 +167,10 @@ class HostPeerConnection:
         await self._pc.addIceCandidate(candidate)
 
     async def close(self) -> None:
+        # Stop the injector before the connection goes away: it owns a
+        # self-re-arming touch keepalive timer that would otherwise keep
+        # injecting on pointer id 0 long after this connection is gone,
+        # corrupting gestures made over the next one.
+        if self._input_injector is not None:
+            self._input_injector.close()
         await self._pc.close()

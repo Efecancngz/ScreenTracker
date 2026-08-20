@@ -432,3 +432,37 @@ def test_host_peer_connection_survives_touch_injector_construction_failure_messa
             "Touch injection unavailable" in str(call.args[0])
             for call in mock_print.call_args_list
         )
+
+
+@pytest.mark.asyncio
+async def test_touch_keepalive_stops_re_arming_once_injection_starts_failing(injector):
+    """Observed on-device: a keepalive chain whose contact no longer
+    exists kept re-arming forever, injecting thousands of failing
+    updates (GetLastError=87). The failure was swallowed and the timer
+    re-scheduled regardless, so the chain could never die."""
+    instance, _, _, mock_user32 = injector
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+    mock_user32.InjectTouchInput.return_value = 0  # the contact is gone
+
+    instance._touch_keepalive_tick()
+
+    assert instance._touch_keepalive_handle is None
+
+
+@pytest.mark.asyncio
+async def test_close_stops_a_discarded_injector_from_injecting_forever(injector):
+    """A new InputInjector is built per peer connection, and the host
+    replaces the peer connection on every peer-joined. Without an
+    explicit stop, a mid-gesture injector outlives its connection and
+    its keepalive keeps yanking pointer id 0 back to a stale position,
+    fighting the live gesture."""
+    instance, _, _, mock_user32 = injector
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+    instance.close()
+
+    assert instance._touch_keepalive_handle is None
+    calls_before = mock_user32.InjectTouchInput.call_count
+    instance._touch_keepalive_tick()
+    assert mock_user32.InjectTouchInput.call_count == calls_before
