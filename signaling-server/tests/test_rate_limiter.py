@@ -68,3 +68,44 @@ def test_should_kick_once_kick_threshold_reached():
     limiter.record_failure("1.2.3.4")
 
     assert limiter.should_kick("1.2.3.4")
+
+
+def test_stale_entries_are_evicted_after_the_retention_window():
+    """_failures/_locked_until never shrank on their own -- a key that
+    failed a few times (below the lock threshold) and was never seen
+    again stayed in memory for the lifetime of the process. Over a
+    long-running server this is unbounded growth. A key idle past the
+    retention window, and not currently locked, should be forgotten."""
+    current_time = [0.0]
+    limiter = RateLimiter(
+        failure_threshold=1,
+        base_backoff_seconds=2.0,
+        clock=lambda: current_time[0],
+        retention_seconds=100.0,
+    )
+    limiter.record_failure("1.2.3.4")
+    assert limiter.tracked_key_count() == 1
+
+    current_time[0] += 200.0
+    limiter.record_failure("5.6.7.8")  # sweep runs as a side effect
+
+    assert limiter.tracked_key_count() == 1  # only "5.6.7.8" remains
+
+
+def test_a_currently_locked_key_is_not_evicted_even_past_the_retention_window():
+    current_time = [0.0]
+    limiter = RateLimiter(
+        failure_threshold=1,
+        base_backoff_seconds=1000.0,  # long enough to still be locked below
+        max_backoff_seconds=1000.0,
+        clock=lambda: current_time[0],
+        retention_seconds=100.0,
+    )
+    limiter.record_failure("1.2.3.4")
+    limiter.record_failure("1.2.3.4")  # now locked for 1000s
+
+    current_time[0] += 200.0  # past retention_seconds, but still locked
+    limiter.record_failure("5.6.7.8")
+
+    assert limiter.tracked_key_count() == 2
+    assert limiter.seconds_until_unlocked("1.2.3.4") > 0.0
