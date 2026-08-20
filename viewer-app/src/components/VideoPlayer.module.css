@@ -20,10 +20,17 @@
   object-fit: contain;
   background: var(--bg);
   touch-action: none;
-  /* Prevent the native "hold to save/share this media" popup on long-press
-     (iOS Safari's callout menu, and the equivalent long-press selection UI
-     on other mobile browsers) so a long-press always drives right-click
-     input control instead of a system menu. */
+  /* touch-action:none stops the browser from treating a touch as pan/scroll/
+     zoom, but a <video>/<img> is ALSO natively draggable in Chrome/Blink --
+     a completely separate gesture subsystem that touch-action doesn't
+     govern. On Android Chrome this fires pointercancel at a small, fixed,
+     time-independent displacement (observed: 8-9px regardless of whether
+     the drag took 227ms or 6+s) once the browser commits to "the user is
+     dragging this media element out", which was cutting every drag short
+     right at that threshold. -webkit-user-drag: none turns that off.
+     (Distinct from -webkit-touch-callout/-webkit-user-select below, which
+     only cover iOS Safari's long-press "save/share" callout menu.) */
+  -webkit-user-drag: none;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;

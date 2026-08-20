@@ -89,6 +89,8 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
         ref={videoRef}
         autoPlay
         playsInline
+        draggable={false}
+        onDragStart={(event) => event.preventDefault()}
         onContextMenu={(event) => event.preventDefault()}
       />
       <span className={inputReady ? `${styles.inputStatus} ${styles.inputReady}` : styles.inputStatus}>

@@ -119,9 +119,6 @@ class InputInjector:
 
     def _dispatch(self, message: dict) -> None:
         msg_type = message.get("type")
-        if msg_type == "gesture-debug":  # DEBUG (uncommitted)
-            print(f"[DEBUG] gesture ended: reason={message.get('reason')}")
-            return
         if msg_type == "pointer-down":
             button = message.get("button", "left")
             pixels = normalize_to_pixels(

@@ -60,6 +60,13 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  /* #root's min-height uses 100svh (small viewport height, address bar
+     assumed visible) but its child .shell uses 100dvh (dynamic, grows once
+     the address bar auto-hides) -- observed live on a real phone: a real
+     ~5px mismatch (scrollHeight 757 vs innerHeight 752) once the toolbar
+     hid. html/body already have overflow:hidden, but #root itself didn't,
+     so that excess wasn't clipped at this level either. */
+  overflow: hidden;
 }
 
 html,

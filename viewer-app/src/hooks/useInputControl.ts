@@ -61,6 +61,19 @@ export function useInputControl({ videoRef, channel, primaryButton }: UseInputCo
     let primaryLastPoint: Point | null = null;
     let primaryLastClientX = 0;
     let primaryLastClientY = 0;
+    // Was the current primary gesture started by a touch? Chrome on Android
+    // has been observed to fire pointercancel on a touch-originated primary
+    // pointer mid-drag while the underlying native touch (touchmove, then
+    // eventually touchend) keeps delivering real data for the same
+    // finger -- Chrome abandons the Pointer Events abstraction for that
+    // gesture without the finger actually lifting. touchFallbackActive
+    // tracks whether we're currently bridging such an interrupted gesture
+    // via raw Touch Events instead of ending it. Gated on pointerType so a
+    // real desktop mouse's pointercancel (which has no such quirk, and has
+    // no accompanying touch events to fall back to) still releases
+    // immediately as before.
+    let primaryIsTouch = false;
+    let touchFallbackActive = false;
     // The button this specific gesture is using — captured at pointer-down
     // from the current primaryButton, so a mode switch mid-gesture (rare,
     // but the button could in principle change between down and up) can't
@@ -84,7 +97,25 @@ export function useInputControl({ videoRef, channel, primaryButton }: UseInputCo
       primaryPointerId = null;
       primaryLastPoint = null;
       primaryButtonHeld = null;
+      primaryIsTouch = false;
+      touchFallbackActive = false;
       if (point && button) send({ type: "pointer-up", x: point.x, y: point.y, button });
+    }
+
+    // Shared by handlePointerMove's primary branch and the touchmove
+    // fallback below -- both ultimately just have a raw client point to
+    // relay as the gesture's current position.
+    function movePrimaryTo(clientX: number, clientY: number) {
+      primaryLastClientX = clientX;
+      primaryLastClientY = clientY;
+      const point = toNormalized(clientX, clientY);
+      // Outside the displayed picture (letterbox bars): nothing meaningful
+      // to report at this instant, but the gesture itself stays alive and
+      // the last known-good position is kept for the eventual release.
+      if (point) {
+        primaryLastPoint = point;
+        send({ type: "pointer-move", x: point.x, y: point.y });
+      }
     }
 
     function releaseHeldKeys() {
@@ -142,6 +173,7 @@ export function useInputControl({ videoRef, channel, primaryButton }: UseInputCo
       primaryLastClientX = event.clientX;
       primaryLastClientY = event.clientY;
       primaryButtonHeld = primaryButton;
+      primaryIsTouch = event.pointerType === "touch";
       send({ type: "pointer-down", x: point.x, y: point.y, button: primaryButton });
     }
 
@@ -168,16 +200,7 @@ export function useInputControl({ videoRef, channel, primaryButton }: UseInputCo
       }
 
       if (primaryPointerId === null || event.pointerId !== primaryPointerId) return;
-      primaryLastClientX = event.clientX;
-      primaryLastClientY = event.clientY;
-      const point = toNormalized(event.clientX, event.clientY);
-      // Outside the displayed picture (letterbox bars): nothing meaningful
-      // to report at this instant, but the gesture itself stays alive and
-      // the last known-good position is kept for the eventual release.
-      if (point) {
-        primaryLastPoint = point;
-        send({ type: "pointer-move", x: point.x, y: point.y });
-      }
+      movePrimaryTo(event.clientX, event.clientY);
     }
 
     function handlePointerUp(event: PointerEvent) {
@@ -202,6 +225,36 @@ export function useInputControl({ videoRef, channel, primaryButton }: UseInputCo
         return;
       }
       if (primaryPointerId === null || event.pointerId !== primaryPointerId) return;
+      if (primaryIsTouch) {
+        // Chrome-for-Android quirk (see touchFallbackActive's declaration):
+        // this pointer is cancelled, but the finger hasn't actually lifted
+        // -- native touchmove/touchend keep coming for it. Bridge the
+        // gesture across via raw Touch Events instead of ending it here.
+        touchFallbackActive = true;
+        return;
+      }
+      releasePrimary();
+    }
+
+    function handleTouchMove(event: TouchEvent) {
+      if (!touchFallbackActive) return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      movePrimaryTo(touch.clientX, touch.clientY);
+    }
+
+    function handleTouchEnd(event: TouchEvent) {
+      if (!touchFallbackActive) return;
+      const touch = event.changedTouches[0];
+      if (touch) {
+        const point = toNormalized(touch.clientX, touch.clientY);
+        if (point) primaryLastPoint = point;
+      }
+      releasePrimary();
+    }
+
+    function handleTouchCancel() {
+      if (!touchFallbackActive) return;
       releasePrimary();
     }
 
@@ -233,6 +286,9 @@ export function useInputControl({ videoRef, channel, primaryButton }: UseInputCo
     video.addEventListener("pointermove", handlePointerMove);
     video.addEventListener("pointerup", handlePointerUp);
     video.addEventListener("pointercancel", handlePointerCancel);
+    video.addEventListener("touchmove", handleTouchMove);
+    video.addEventListener("touchend", handleTouchEnd);
+    video.addEventListener("touchcancel", handleTouchCancel);
     video.addEventListener("wheel", handleWheel);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
@@ -249,6 +305,9 @@ export function useInputControl({ videoRef, channel, primaryButton }: UseInputCo
       video.removeEventListener("pointermove", handlePointerMove);
       video.removeEventListener("pointerup", handlePointerUp);
       video.removeEventListener("pointercancel", handlePointerCancel);
+      video.removeEventListener("touchmove", handleTouchMove);
+      video.removeEventListener("touchend", handleTouchEnd);
+      video.removeEventListener("touchcancel", handleTouchCancel);
       video.removeEventListener("wheel", handleWheel);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);

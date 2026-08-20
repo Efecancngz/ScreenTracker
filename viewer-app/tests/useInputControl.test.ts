@@ -46,6 +46,14 @@ function pointerEvent(type: string, clientX: number, clientY: number, pointerId 
   return new PointerEvent(type, { clientX, clientY, pointerId, bubbles: true });
 }
 
+function touchPointerEvent(type: string, clientX: number, clientY: number, pointerId = 1) {
+  return new PointerEvent(type, { clientX, clientY, pointerId, pointerType: "touch", bubbles: true });
+}
+
+function touchEvent(type: string, clientX: number, clientY: number) {
+  return new TouchEvent(type, { changedTouches: [{ clientX, clientY }] as unknown as Touch[], bubbles: true });
+}
+
 function sentMessages(channel: RTCDataChannel) {
   return (channel.send as any).mock.calls.map((call: any[]) => JSON.parse(call[0]));
 }
@@ -380,5 +388,87 @@ describe("useInputControl", () => {
       { type: "key-down", key: "Alt" },
       { type: "key-up", key: "Alt" },
     ]);
+  });
+
+  describe("touch-events fallback after a Chrome-for-Android pointercancel", () => {
+    // Observed live on a real Android Chrome device: mid-drag, the browser
+    // fires pointercancel on the primary touch pointer while the underlying
+    // native touch (touchmove, eventually touchend) keeps delivering real
+    // data for the same finger -- Chrome abandons the Pointer Events
+    // abstraction for that gesture without the finger actually lifting.
+    // Falling back to raw Touch Events for a touch-originated primary
+    // gesture keeps the drag alive instead of cutting it off at whatever
+    // point pointercancel happened to fire.
+
+    it("does not release the gesture when pointercancel fires for a touch-originated primary pointer", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      (channel.send as any).mockClear();
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it("keeps relaying pointer-move from raw touchmove once pointercancel has interrupted a touch gesture", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+      (channel.send as any).mockClear();
+
+      video.dispatchEvent(touchEvent("touchmove", 150, 60));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-move", x: 0.75, y: 0.6 }]);
+    });
+
+    it("finally releases the gesture on touchend once pointercancel had interrupted it", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+      video.dispatchEvent(touchEvent("touchmove", 150, 60));
+      (channel.send as any).mockClear();
+
+      video.dispatchEvent(touchEvent("touchend", 150, 60));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-up", x: 0.75, y: 0.6, button: "left" }]);
+    });
+
+    it("also releases the gesture on touchcancel once pointercancel had interrupted it", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+      (channel.send as any).mockClear();
+
+      video.dispatchEvent(touchEvent("touchcancel", 100, 50));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-up", x: 0.5, y: 0.5, button: "left" }]);
+    });
+
+    it("ignores raw touchmove while no pointercancel has interrupted the gesture, to avoid double-sending", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      (channel.send as any).mockClear();
+
+      // A normal (non-cancelled) touch fires touchmove and pointermove for
+      // the same physical movement -- the fallback listener must stay
+      // silent here, or every ordinary drag would double-send pointer-move.
+      video.dispatchEvent(touchEvent("touchmove", 150, 60));
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it("still releases immediately on pointercancel for a mouse-originated primary pointer (unchanged behavior)", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(pointerEvent("pointerdown", 100, 50, 1));
+      (channel.send as any).mockClear();
+      video.dispatchEvent(pointerEvent("pointercancel", 100, 50, 1));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-up", x: 0.5, y: 0.5, button: "left" }]);
+    });
   });
 });
