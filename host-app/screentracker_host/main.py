@@ -3,7 +3,7 @@ import os
 import sys
 from collections.abc import Callable
 
-from screentracker_host.host_identity import load_or_create_host_id
+from screentracker_host.host_identity import load_or_create_host_id, load_or_create_host_secret
 from screentracker_host.paired_devices import PairedDevices
 from screentracker_host.pairing import gui_prompt, request_approval
 from screentracker_host.signaling_client import SignalingClient
@@ -27,7 +27,8 @@ async def run() -> None:
     await client.connect()
 
     host_id = load_or_create_host_id()
-    await client.send({"type": "register-host", "host_id": host_id})
+    host_secret = load_or_create_host_secret()
+    await client.send({"type": "register-host", "host_id": host_id, "host_secret": host_secret})
 
     session_id = await client.create_session()
     print(f"Session ready. Share this code with your viewer: {session_id}")

@@ -1,4 +1,5 @@
 import logging
+import secrets
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,13 @@ _connection_sessions: dict[str, str] = {}
 # host_id -> connection_id, so a returning paired device can find its host's
 # current session without ever typing a code
 _host_ids: dict[str, str] = {}
+# host_id -> the secret its first registrant proved ownership with. Without
+# this, register-host had no ownership check at all: any connection could
+# claim any host_id (learned by any viewer that ever paired with it, via
+# pair-approved) and hijack it, capturing a later victim's auth token via
+# the peer-joined relay. Never evicted -- a host_id is a long-lived,
+# persisted identity (host_identity.json), not a per-connection value.
+_host_secrets: dict[str, str] = {}
 
 _RELAYED_MESSAGE_TYPES = (
     "offer",
@@ -65,7 +73,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {"type": "session-created", "session_id": session.session_id}
                 )
             elif message.type == "register-host":
-                _host_ids[message.host_id] = connection_id
+                _handle_register_host(connection_id, message.host_id, message.host_secret)
             elif message.type == "join-session":
                 await _handle_join(connection_id, message.session_id, message.device_id, websocket)
             elif message.type == "authenticate":
@@ -167,6 +175,19 @@ async def _handle_join_failure(websocket: WebSocket, client_key: str, reason: st
     if rate_limiter.should_kick(client_key):
         logger.warning("Closing connection from %s after repeated failed join attempts", client_key)
         await websocket.close()
+
+
+def _handle_register_host(connection_id: str, host_id: str, host_secret: str) -> None:
+    known_secret = _host_secrets.get(host_id)
+    if known_secret is None:
+        # First time this host_id has ever been registered -- trust on
+        # first use, the only option with no central authority. From here
+        # on, only a connection presenting this same secret may claim it.
+        _host_secrets[host_id] = host_secret
+    elif not secrets.compare_digest(known_secret, host_secret):
+        logger.warning("Rejected register-host for %r: secret mismatch", host_id)
+        return
+    _host_ids[host_id] = connection_id
 
 
 def _handle_release_peer(connection_id: str) -> None:
