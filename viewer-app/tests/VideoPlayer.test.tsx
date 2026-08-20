@@ -20,6 +20,12 @@ class FakeDataChannel extends EventTarget {
     this.readyState = "closed";
     this.dispatchEvent(new Event("close"));
   }
+
+  send = vi.fn();
+
+  receive(payload: unknown) {
+    this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(payload) }));
+  }
 }
 
 describe("VideoPlayer", () => {
@@ -143,6 +149,61 @@ describe("VideoPlayer", () => {
       expect(exitFullscreen).toHaveBeenCalledTimes(1);
 
       Object.defineProperty(document, "fullscreenElement", { value: null, configurable: true });
+    });
+  });
+
+  describe("monitor selector", () => {
+    it("shows no selector when there is only one monitor", () => {
+      const fakeStream = {} as MediaStream;
+      const channel = new FakeDataChannel("open");
+      render(<VideoPlayer stream={fakeStream} inputChannel={channel as unknown as RTCDataChannel} />);
+
+      channel.receive({
+        type: "monitor-list",
+        monitors: [{ index: 1, width: 1920, height: 1080, left: 0, top: 0 }],
+      });
+
+      expect(screen.queryByRole("button", { name: /monitor 1/i })).not.toBeInTheDocument();
+    });
+
+    it("shows one button per monitor when there are two or more", async () => {
+      const fakeStream = {} as MediaStream;
+      const channel = new FakeDataChannel("open");
+      render(<VideoPlayer stream={fakeStream} inputChannel={channel as unknown as RTCDataChannel} />);
+
+      channel.receive({
+        type: "monitor-list",
+        monitors: [
+          { index: 1, width: 1920, height: 1080, left: 0, top: 0 },
+          { index: 2, width: 1280, height: 720, left: 1920, top: 0 },
+        ],
+      });
+
+      await waitFor(() => {
+        expect(screen.getByRole("button", { name: /monitor 1/i })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: /monitor 2/i })).toBeInTheDocument();
+      });
+    });
+
+    it("sends select-monitor and marks the tapped button active", async () => {
+      const user = userEvent.setup();
+      const fakeStream = {} as MediaStream;
+      const channel = new FakeDataChannel("open");
+      render(<VideoPlayer stream={fakeStream} inputChannel={channel as unknown as RTCDataChannel} />);
+
+      channel.receive({
+        type: "monitor-list",
+        monitors: [
+          { index: 1, width: 1920, height: 1080, left: 0, top: 0 },
+          { index: 2, width: 1280, height: 720, left: 1920, top: 0 },
+        ],
+      });
+
+      const monitor2Button = await screen.findByRole("button", { name: /monitor 2/i });
+      await user.click(monitor2Button);
+
+      expect(channel.send).toHaveBeenCalledWith(JSON.stringify({ type: "select-monitor", index: 2 }));
+      expect(monitor2Button).toHaveAttribute("aria-pressed", "true");
     });
   });
 });

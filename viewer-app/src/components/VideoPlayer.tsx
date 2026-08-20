@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useInputControl, type PrimaryButton } from "../hooks/useInputControl";
+import { useMonitorSelection } from "../hooks/useMonitorSelection";
 import styles from "./VideoPlayer.module.css";
 
 interface VideoPlayerProps {
@@ -31,6 +32,7 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
   }, [stream]);
 
   useInputControl({ videoRef, channel: inputChannel, primaryButton });
+  const { monitors, activeIndex, selectMonitor } = useMonitorSelection(inputChannel);
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -107,6 +109,25 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
           <span className={inputReady ? `${styles.inputStatus} ${styles.inputReady}` : styles.inputStatus}>
             {inputReady ? "Input active" : "Input connecting…"}
           </span>
+          {monitors.length > 1 && (
+            <div className={styles.monitorSelector}>
+              {monitors.map((monitor) => (
+                <button
+                  key={monitor.index}
+                  type="button"
+                  className={
+                    monitor.index === activeIndex
+                      ? `${styles.monitorButton} ${styles.monitorButtonActive}`
+                      : styles.monitorButton
+                  }
+                  aria-pressed={monitor.index === activeIndex}
+                  onClick={() => selectMonitor(monitor.index)}
+                >
+                  Monitor {monitor.index}
+                </button>
+              ))}
+            </div>
+          )}
           <button type="button" className={styles.fullscreenButton} onClick={() => void toggleFullscreen()}>
             {isFullscreen ? "⤡ Exit fullscreen" : "⛶ Fullscreen"}
           </button>
