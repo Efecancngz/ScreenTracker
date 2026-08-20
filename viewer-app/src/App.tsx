@@ -146,15 +146,23 @@ function Viewer({ signalingServerUrl }: { signalingServerUrl: string }) {
         attemptedAutoAuthRef.current = false;
         setStatus("idle");
         break;
-      case "session-expired":
+      case "session-expired": {
+        const reason = lastMessage.reason as string;
+        // "not-found" from an auto-authenticate attempt usually means a
+        // startup race, not a truly gone host: start.bat launches the
+        // signaling server and host app together, so a reconnecting paired
+        // viewer can authenticate before the host has finished
+        // re-registering with a freshly restarted signaling server. The
+        // host will be there moments later, so this gets the same
+        // auto-retry peer-disconnected gets below, instead of a dead end
+        // that only a manual page refresh could recover from.
+        if (reason === "not-found" && tryAutoAuthenticate()) break;
         setStatus("error");
         setErrorMessage(
-          sessionRejectedMessage(
-            lastMessage.reason as string,
-            lastMessage.retry_after_seconds as number | undefined
-          )
+          sessionRejectedMessage(reason, lastMessage.retry_after_seconds as number | undefined)
         );
         break;
+      }
       case "peer-disconnected": {
         // The host's own connection dropped — its process restarted, its
         // network blipped, etc. The host app survives disconnects and

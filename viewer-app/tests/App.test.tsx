@@ -128,6 +128,34 @@ describe("App", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
+  it("retries automatically instead of erroring out when a paired viewer's auto-authenticate races a not-yet-registered host", async () => {
+    // Real-world race: start.bat launches the signaling server and host app
+    // together, so a viewer reconnecting at the same moment can authenticate
+    // before the host has finished re-registering with a freshly restarted
+    // signaling server. The host WILL be there moments later, so this
+    // deserves the same auto-retry peer-disconnected gets, not a dead end.
+    storePairing({ hostId: "host-1", token: "tok-1" });
+    render(<App />);
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emitOpen());
+    expect(JSON.parse(socket.sent[0])).toMatchObject({ type: "authenticate", host_id: "host-1" });
+
+    act(() => socket.emitMessage({ type: "session-expired", reason: "not-found" }));
+
+    expect(JSON.parse(socket.sent[1])).toMatchObject({ type: "authenticate", host_id: "host-1" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("still shows the expired-session error for a manual join with no pairing to retry", async () => {
+    render(<App />);
+    await joinWithCode("X7K2M9");
+
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emitMessage({ type: "session-expired", reason: "not-found" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Session code not found.");
+  });
+
   it("auto-authenticates with a stored pairing instead of showing the join form", async () => {
     storePairing({ hostId: "host-1", token: "tok-1" });
     render(<App />);
