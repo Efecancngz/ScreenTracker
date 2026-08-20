@@ -17,6 +17,12 @@ class Session:
     session_id: str
     host_connection_id: str
     viewer_connection_id: str | None = None
+    # The persisted, per-browser id the viewer sends alongside its
+    # connection_id. Lets a device that reconnects with a brand new
+    # connection_id (its old WebSocket died without a clean close -- a
+    # mobile tab closed instead of reloaded rarely sends one) reclaim its
+    # own slot instead of being told the session belongs to someone else.
+    viewer_device_id: str | None = None
     created_at: float = field(default_factory=time.monotonic)
     # Once a session has been claimed at least once, a later viewer
     # disconnect (e.g. a page refresh) only releases the viewer slot — it
@@ -55,7 +61,9 @@ class SessionManager:
             if code not in self._sessions:
                 return code
 
-    def join_session(self, session_id: str, viewer_connection_id: str) -> Session:
+    def join_session(
+        self, session_id: str, viewer_connection_id: str, device_id: str | None = None
+    ) -> Session:
         session = self._sessions.get(session_id)
         if session is None:
             raise SessionNotFoundError(session_id)
@@ -65,11 +73,18 @@ class SessionManager:
             # also stops expiring — the host's disconnect cleans it up.
             if session.viewer_connection_id == viewer_connection_id:
                 return session
+            if device_id is not None and session.viewer_device_id == device_id:
+                # Same device, new connection_id -- its old WebSocket almost
+                # certainly died without a clean close (see viewer_device_id's
+                # docstring). Let it take over rather than raising forever.
+                session.viewer_connection_id = viewer_connection_id
+                return session
             raise SessionAlreadyClaimedError(session_id)
         if not session.ever_claimed and self._is_expired(session):
             del self._sessions[session_id]
             raise SessionExpiredError(session_id)
         session.viewer_connection_id = viewer_connection_id
+        session.viewer_device_id = device_id
         session.ever_claimed = True
         return session
 

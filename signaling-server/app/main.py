@@ -103,7 +103,7 @@ async def _handle_join(
         await _handle_join_failure(websocket, client_key, "rate-limited")
         return
 
-    if not await _claim_session(session_id, connection_id, client_key, websocket):
+    if not await _claim_session(session_id, connection_id, client_key, websocket, device_id):
         return
 
     _connection_sessions[connection_id] = session_id
@@ -128,7 +128,9 @@ async def _handle_authenticate(connection_id: str, message, websocket: WebSocket
         await _handle_join_failure(websocket, client_key, "not-found")
         return
 
-    if not await _claim_session(session_id, connection_id, client_key, websocket):
+    if not await _claim_session(
+        session_id, connection_id, client_key, websocket, message.device_id
+    ):
         return
 
     _connection_sessions[connection_id] = session_id
@@ -144,13 +146,22 @@ async def _handle_authenticate(connection_id: str, message, websocket: WebSocket
 
 
 async def _claim_session(
-    session_id: str, connection_id: str, client_key: str, websocket: WebSocket
+    session_id: str,
+    connection_id: str,
+    client_key: str,
+    websocket: WebSocket,
+    device_id: str | None = None,
 ) -> bool:
     """Try to claim session_id for connection_id. Sends the appropriate
     session-expired reply and records a rate-limit failure on any rejection.
     Returns True only if the claim succeeded."""
+    previous_session = session_manager.get_session(session_id)
+    previous_viewer_connection_id = (
+        previous_session.viewer_connection_id if previous_session else None
+    )
+
     try:
-        session_manager.join_session(session_id, connection_id)
+        session_manager.join_session(session_id, connection_id, device_id)
     except SessionNotFoundError:
         await _handle_join_failure(websocket, client_key, "not-found")
         return False
@@ -160,6 +171,21 @@ async def _claim_session(
     except SessionAlreadyClaimedError:
         await _handle_join_failure(websocket, client_key, "already-claimed")
         return False
+
+    if previous_viewer_connection_id is not None and previous_viewer_connection_id != connection_id:
+        # The same device_id reclaimed a slot still held by a different
+        # connection_id -- that old connection's WebSocket almost certainly
+        # died without a clean close (see Session.viewer_device_id). It'll
+        # never trigger _handle_disconnect on its own, so clean up its
+        # bookkeeping here and best-effort close it in case it's actually
+        # still alive somewhere and just never got a chance to notice.
+        _connection_sessions.pop(previous_viewer_connection_id, None)
+        stale_ws = _connections.pop(previous_viewer_connection_id, None)
+        if stale_ws is not None:
+            try:
+                await stale_ws.close()
+            except Exception:
+                pass
 
     rate_limiter.record_success(client_key)
     return True

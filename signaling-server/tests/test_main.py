@@ -127,6 +127,50 @@ def test_viewer_disconnect_then_authenticate_reconnect_finds_the_live_session():
             assert peer_joined["type"] == "peer-joined"
 
 
+def test_authenticate_from_a_new_connection_with_the_same_device_id_reclaims_a_stale_slot():
+    # A mobile tab that's force-closed or killed in the background rarely
+    # sends a clean WebSocket close frame -- the server's WebSocketDisconnect
+    # handler never fires, so the old connection_id is never cleaned up on
+    # its own. The same device reconnecting (new connection_id, same
+    # persisted device_id) must be able to reclaim the slot instead of
+    # getting stuck behind a connection that's actually dead.
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws:
+        host_ws.send_json(
+            {"type": "register-host", "host_id": "host-reclaim", "host_secret": "secret-reclaim"}
+        )
+        host_ws.send_json({"type": "create-session"})
+        host_ws.receive_json()  # session-created
+
+        stale_ws = client.websocket_connect("/ws").__enter__()
+        try:
+            stale_ws.send_json(
+                {
+                    "type": "authenticate",
+                    "host_id": "host-reclaim",
+                    "device_id": "dev-stale",
+                    "token": "tok-1",
+                }
+            )
+            host_ws.receive_json()  # peer-joined for the stale connection
+
+            # stale_ws is never closed here -- it's left exactly as a
+            # force-closed mobile tab would look from the server's side.
+            with client.websocket_connect("/ws") as new_ws:
+                new_ws.send_json(
+                    {
+                        "type": "authenticate",
+                        "host_id": "host-reclaim",
+                        "device_id": "dev-stale",
+                        "token": "tok-1",
+                    }
+                )
+                peer_joined = host_ws.receive_json()
+                assert peer_joined["type"] == "peer-joined"
+        finally:
+            stale_ws.close()
+
+
 def test_host_disconnect_still_fully_removes_the_session():
     client = TestClient(app)
     with client.websocket_connect("/ws") as host_ws:

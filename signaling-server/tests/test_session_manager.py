@@ -88,6 +88,47 @@ def test_release_viewer_on_unknown_session_is_a_no_op():
     manager.release_viewer("does-not-exist")  # must not raise
 
 
+def test_join_by_the_same_device_id_reclaims_a_session_held_by_a_dead_connection():
+    # A mobile tab closed (not reloaded) often never sends a clean WS close
+    # frame, so the server's disconnect handler never runs and the old
+    # connection_id stays the claimant forever. The same device reconnecting
+    # gets a new connection_id but the same persisted device_id -- it must
+    # be able to take over instead of being told the session is claimed by
+    # someone else.
+    manager = SessionManager()
+    session = manager.create_session(host_connection_id="host-1")
+    manager.join_session(session.session_id, viewer_connection_id="viewer-1", device_id="device-A")
+
+    reclaimed = manager.join_session(
+        session.session_id, viewer_connection_id="viewer-2", device_id="device-A"
+    )
+
+    assert reclaimed.viewer_connection_id == "viewer-2"
+
+
+def test_join_by_a_different_device_id_still_raises_already_claimed():
+    manager = SessionManager()
+    session = manager.create_session(host_connection_id="host-1")
+    manager.join_session(session.session_id, viewer_connection_id="viewer-1", device_id="device-A")
+
+    with pytest.raises(SessionAlreadyClaimedError):
+        manager.join_session(session.session_id, viewer_connection_id="viewer-2", device_id="device-B")
+
+    assert manager.get_session(session.session_id).viewer_connection_id == "viewer-1"
+
+
+def test_join_with_no_device_id_still_raises_already_claimed():
+    # No device_id to verify identity with -- must not be treated as a match.
+    manager = SessionManager()
+    session = manager.create_session(host_connection_id="host-1")
+    manager.join_session(session.session_id, viewer_connection_id="viewer-1", device_id="device-A")
+
+    with pytest.raises(SessionAlreadyClaimedError):
+        manager.join_session(session.session_id, viewer_connection_id="viewer-2")
+
+    assert manager.get_session(session.session_id).viewer_connection_id == "viewer-1"
+
+
 def test_released_session_does_not_expire_even_after_the_ttl():
     # A page refresh releases the viewer slot; the reconnect might happen
     # after the original TTL window but must still succeed since the
