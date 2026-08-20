@@ -179,3 +179,61 @@ def test_get_monitor_size_returns_width_and_height_without_grabbing():
 
     assert size == (1920, 1080)
     mock_sct.grab.assert_not_called()
+
+
+def test_capture_recovers_from_a_grab_failure_by_recreating_the_context():
+    """Observed real-world cause of the video track dying silently while
+    the DataChannel stays healthy: mss's GDI/DXGI context can be
+    invalidated by a display sleep/wake, resolution change, or screen
+    lock/unlock while a capture loop is running. grab() then raises on
+    every subsequent call against the now-stale context. Recovering by
+    tearing down and rebuilding self._sct lets a transient invalidation
+    heal itself instead of killing the stream for the rest of the
+    connection's lifetime."""
+    with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
+        stale_sct = _make_mock_sct((100, 50), (50, 100))
+        stale_sct.grab.side_effect = Exception("GDI context invalidated")
+        fresh_sct = _make_mock_sct((100, 50), (50, 100))
+        mock_mss_cls.side_effect = [stale_sct, fresh_sct]
+
+        with patch(
+            "screentracker_host.capture.np.array",
+            return_value=np.zeros((50, 100, 4), dtype=np.uint8),
+        ), patch(
+            "screentracker_host.capture.cv2.cvtColor",
+            return_value=np.zeros((50, 100, 3), dtype=np.uint8),
+        ):
+            capturer = ScreenCapturer()
+            # A single capture() call does the whole fail-then-recover cycle
+            # internally: constructs stale_sct, grab() fails, rebuilds, and
+            # retries against a fresh context -- all before returning.
+            frame = capturer.capture()
+
+    assert mock_mss_cls.call_count == 2
+    stale_sct.close.assert_called_once_with()
+    fresh_sct.grab.assert_called_once_with(fresh_sct.monitors[1])
+    assert frame.width == 100
+    assert frame.height == 50
+
+
+def test_capture_raises_if_the_recreated_context_also_fails():
+    """A second, distinct failure right after recovery is a real error
+    (not a one-off transient blip) and must surface, not loop or hide
+    the problem forever."""
+    with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
+        first_sct = _make_mock_sct((100, 50), (50, 100))
+        first_sct.grab.side_effect = Exception("first failure")
+        second_sct = _make_mock_sct((100, 50), (50, 100))
+        second_sct.grab.side_effect = Exception("second failure")
+        mock_mss_cls.side_effect = [first_sct, second_sct]
+
+        capturer = ScreenCapturer()
+        try:
+            capturer.capture()
+            raised = False
+        except Exception as exc:
+            raised = True
+            assert "second failure" in str(exc)
+
+    assert raised
+    assert mock_mss_cls.call_count == 2

@@ -31,6 +31,21 @@ class ScreenCapturer:
         self._max_dim = max_dim
 
     def capture(self) -> Frame:
+        try:
+            return self._grab()
+        except Exception:
+            # mss's GDI/DXGI context can be invalidated by a display
+            # sleep/wake, resolution change, or screen lock/unlock while a
+            # capture loop is running -- every grab() then raises against
+            # the now-stale context. Rebuild it once; a transient
+            # invalidation heals itself, a persistent failure still raises
+            # (to the caller) after this single retry.
+            if self._sct is not None:
+                self._sct.close()
+            self._sct = None
+            return self._grab()
+
+    def _grab(self) -> Frame:
         if self._sct is None:
             self._sct = mss.mss()
         monitor = self._sct.monitors[self._monitor_index]
