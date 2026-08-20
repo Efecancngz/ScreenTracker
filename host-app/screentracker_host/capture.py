@@ -30,6 +30,14 @@ class ScreenCapturer:
         self._monitor_index = monitor_index
         self._max_dim = max_dim
 
+    def set_monitor(self, index: int) -> None:
+        """Changes which monitor the next capture() grabs. A plain attribute
+        write is safe without a lock here: the capture worker thread only
+        ever reads self._monitor_index at the start of _grab(), and CPython
+        attribute assignment is atomic, so a switch takes effect cleanly on
+        the very next frame with no torn read possible."""
+        self._monitor_index = index
+
     def capture(self) -> Frame:
         try:
             return self._grab()
@@ -78,3 +86,21 @@ def get_monitor_size(monitor_index: int = 1) -> tuple[int, int]:
     with mss.mss() as sct:
         monitor = sct.monitors[monitor_index]
         return monitor["width"], monitor["height"]
+
+
+def list_monitors() -> list[dict]:
+    """All physical monitors mss can see, excluding index 0 (mss's synthetic
+    "all monitors combined" entry -- never a real capture target, and never
+    what `monitor_index`'s default of 1 refers to)."""
+    with mss.mss() as sct:
+        return [
+            {
+                "index": i,
+                "width": monitor["width"],
+                "height": monitor["height"],
+                "left": monitor["left"],
+                "top": monitor["top"],
+            }
+            for i, monitor in enumerate(sct.monitors)
+            if i != 0
+        ]
