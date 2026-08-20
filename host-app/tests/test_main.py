@@ -175,3 +175,82 @@ async def test_unknown_device_prompt_uses_the_injected_prompt_fn(tmp_path):
 
     assert streaming is True
     prompt_fn.assert_called_once()
+
+
+import asyncio
+from unittest.mock import patch
+
+from screentracker_host.main import run
+
+
+class _FakeClient:
+    """Stands in for SignalingClient. connect/send/create_session succeed;
+    messages() is scripted per-instance via `message_batches` (a list of
+    lists -- each inner list is yielded, then the generator raises to
+    simulate the connection dropping, except the LAST batch which just
+    yields forever so the test can cancel run() once it's satisfied)."""
+
+    instances: list["_FakeClient"] = []
+
+    def __init__(self, url, *args, **kwargs):
+        self.url = url
+        self.sent: list[dict] = []
+        self.closed = False
+        _FakeClient.instances.append(self)
+
+    async def connect(self):
+        pass
+
+    async def send(self, message):
+        self.sent.append(message)
+
+    async def create_session(self):
+        return "ABC123"
+
+    async def close(self):
+        self.closed = True
+
+    async def messages(self):
+        index = len(_FakeClient.instances) - 1
+        batch = _FakeClient.script[index] if index < len(_FakeClient.script) else []
+        for message in batch:
+            yield message
+        if index < len(_FakeClient.script) - 1:
+            raise ConnectionResetError("simulated signaling connection drop")
+        await asyncio.Event().wait()  # last instance: stay "connected" forever
+        yield  # pragma: no cover -- unreachable, keeps this an async generator
+
+
+@pytest.mark.asyncio
+async def test_run_reconnects_instead_of_crashing_when_the_signaling_connection_drops():
+    """Confirmed live: restarting the signaling server mid-session killed
+    the ENTIRE host-app process -- the message loop's ConnectionClosedError
+    had nowhere to go but out of run(), and asyncio.run() in main() let it
+    kill the process. Once the host is dead, nothing -- not even the
+    viewer's own reconnect-with-backoff -- can bring the session back
+    without a human restarting start.bat by hand."""
+    _FakeClient.instances = []
+    _FakeClient.script = [[], []]  # first connection drops immediately, second stays up
+
+    with patch("screentracker_host.main.SignalingClient", _FakeClient), \
+         patch("screentracker_host.main.HostPeerConnection") as mock_pc_cls, \
+         patch("screentracker_host.main.load_or_create_host_id", return_value="host-1"), \
+         patch("screentracker_host.main.load_or_create_host_secret", return_value="secret-1"), \
+         patch("screentracker_host.main.RECONNECT_BASE_DELAY_SECONDS", 0.001), \
+         patch.dict("os.environ", {"SIGNALING_SERVER_URL": "ws://example/ws"}):
+        mock_pc_cls.return_value = AsyncMock()
+
+        task = asyncio.create_task(run())
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if len(_FakeClient.instances) >= 2:
+                break
+
+        assert len(_FakeClient.instances) >= 2, "run() must reconnect, not crash, after the drop"
+        assert _FakeClient.instances[0].closed
+        assert {"type": "register-host", "host_id": "host-1", "host_secret": "secret-1"} in \
+            _FakeClient.instances[1].sent
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
