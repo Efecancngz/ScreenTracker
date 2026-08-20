@@ -36,9 +36,11 @@ def clamp_unit(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-def normalize_to_pixels(x: float, y: float, screen_width: int, screen_height: int) -> tuple[int, int]:
-    px = round(clamp_unit(x) * screen_width)
-    py = round(clamp_unit(y) * screen_height)
+def normalize_to_pixels(
+    x: float, y: float, screen_width: int, screen_height: int, offset_x: int = 0, offset_y: int = 0
+) -> tuple[int, int]:
+    px = round(clamp_unit(x) * screen_width) + offset_x
+    py = round(clamp_unit(y) * screen_height) + offset_y
     return px, py
 
 
@@ -80,6 +82,8 @@ class InputInjector:
 
     def __init__(self, screen_size: tuple[int, int]) -> None:
         self._screen_width, self._screen_height = screen_size
+        self._offset_x = 0
+        self._offset_y = 0
         self._mouse = mouse.Controller()
         self._keyboard = keyboard.Controller()
         self._warned = False
@@ -105,6 +109,18 @@ class InputInjector:
             )
             return None
 
+    def update_screen(self, width: int, height: int, left: int, top: int) -> None:
+        """Called when the viewer switches which monitor is active -- see
+        webrtc_peer.py's select-monitor handling. left/top are the
+        monitor's position in the Windows virtual desktop (mss's
+        "left"/"top"), needed so pointer coordinates land on the right
+        monitor's actual global position, not (0,0)-relative to whichever
+        monitor happens to be primary."""
+        self._screen_width = width
+        self._screen_height = height
+        self._offset_x = left
+        self._offset_y = top
+
     def handle_message(self, message: dict) -> None:
         try:
             self._dispatch(message)
@@ -122,7 +138,8 @@ class InputInjector:
         if msg_type == "pointer-down":
             button = message.get("button", "left")
             pixels = normalize_to_pixels(
-                message["x"], message["y"], self._screen_width, self._screen_height
+                message["x"], message["y"], self._screen_width, self._screen_height,
+                self._offset_x, self._offset_y,
             )
             self._active_button = button
             if button == "left" and self._mouse_injector is not None:
@@ -132,7 +149,8 @@ class InputInjector:
                 self._mouse.press(_BUTTON_MAP[button])
         elif msg_type == "pointer-move":
             pixels = normalize_to_pixels(
-                message["x"], message["y"], self._screen_width, self._screen_height
+                message["x"], message["y"], self._screen_width, self._screen_height,
+                self._offset_x, self._offset_y,
             )
             if self._active_button == "left" and self._mouse_injector is not None:
                 self._mouse_injector.move(*pixels)
@@ -141,7 +159,8 @@ class InputInjector:
         elif msg_type == "pointer-up":
             button = message.get("button", "left")
             pixels = normalize_to_pixels(
-                message["x"], message["y"], self._screen_width, self._screen_height
+                message["x"], message["y"], self._screen_width, self._screen_height,
+                self._offset_x, self._offset_y,
             )
             try:
                 if button == "left" and self._mouse_injector is not None:
