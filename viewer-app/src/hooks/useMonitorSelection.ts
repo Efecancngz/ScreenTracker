@@ -39,8 +39,33 @@ export function useMonitorSelection(channel: RTCDataChannel | null): UseMonitorS
       setActiveIndex(payload.monitors[0]?.index ?? null);
     }
 
+    // The host also broadcasts monitor-list once, on its side of the
+    // channel opening -- that's the fast path with zero extra round trips.
+    // But this effect (and its message listener) only attaches after React
+    // re-renders with a non-null channel, which happens asynchronously
+    // after the channel actually opens. On a fast connection (e.g.
+    // same-machine loopback) the host can already have sent and finished
+    // sending that one-shot broadcast before this listener attaches --
+    // RTCDataChannel doesn't buffer/replay messages for late listeners, so
+    // it would be lost permanently. Proactively requesting the list here
+    // covers both race orderings: request immediately if already open
+    // (covers the host having already broadcast), and also request on the
+    // channel's own "open" event (covers this effect attaching before the
+    // underlying transport has actually opened yet).
+    function requestMonitorList() {
+      if (channel && channel.readyState === "open") {
+        channel.send(JSON.stringify({ type: "request-monitor-list" }));
+      }
+    }
+
     channel.addEventListener("message", handleMessage);
-    return () => channel.removeEventListener("message", handleMessage);
+    channel.addEventListener("open", requestMonitorList);
+    if (channel.readyState === "open") requestMonitorList();
+
+    return () => {
+      channel.removeEventListener("message", handleMessage);
+      channel.removeEventListener("open", requestMonitorList);
+    };
   }, [channel]);
 
   const selectMonitor = useCallback(

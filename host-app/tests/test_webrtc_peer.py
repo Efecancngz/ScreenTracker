@@ -488,6 +488,105 @@ def test_select_monitor_switches_video_even_when_input_injector_is_unavailable(m
     peer._track.set_monitor.assert_called_once_with(2)
 
 
+def test_data_channel_open_survives_list_monitors_failure(monkeypatch, capsys):
+    fake_injector = MagicMock()
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.InputInjector", lambda screen_size: fake_injector
+    )
+
+    def _raise():
+        raise RuntimeError("no display available")
+
+    monkeypatch.setattr("screentracker_host.webrtc_peer.list_monitors", _raise)
+
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+    peer._input_channel.send = MagicMock()
+
+    # Must not raise -- an exception here would propagate into aiortc's
+    # SCTP receive task and can take down the whole data transport (video
+    # included), which is strictly worse than a missing monitor list.
+    peer._input_channel.emit("open")
+
+    peer._input_channel.send.assert_not_called()
+    captured = capsys.readouterr()
+    assert "monitor-list unavailable" in captured.out
+
+
+def test_select_monitor_survives_list_monitors_failure(monkeypatch, capsys):
+    fake_injector = MagicMock()
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.InputInjector", lambda screen_size: fake_injector
+    )
+
+    def _raise():
+        raise RuntimeError("no display available")
+
+    monkeypatch.setattr("screentracker_host.webrtc_peer.list_monitors", _raise)
+
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+    peer._track.set_monitor = MagicMock()
+
+    # Must not raise.
+    peer._input_channel.emit("message", json.dumps({"type": "select-monitor", "index": 2}))
+
+    peer._track.set_monitor.assert_not_called()
+    fake_injector.update_screen.assert_not_called()
+    captured = capsys.readouterr()
+    assert "select-monitor: monitor list unavailable" in captured.out
+
+
+def test_request_monitor_list_message_sends_the_monitor_list(monkeypatch):
+    fake_injector = MagicMock()
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.InputInjector", lambda screen_size: fake_injector
+    )
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.list_monitors",
+        lambda: [
+            {"index": 1, "width": 1920, "height": 1080, "left": 0, "top": 0},
+            {"index": 2, "width": 1280, "height": 720, "left": 1920, "top": 0},
+        ],
+    )
+
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+    peer._input_channel.send = MagicMock()
+
+    peer._input_channel.emit("message", json.dumps({"type": "request-monitor-list"}))
+
+    peer._input_channel.send.assert_called_once()
+    sent = json.loads(peer._input_channel.send.call_args[0][0])
+    assert sent == {
+        "type": "monitor-list",
+        "monitors": [
+            {"index": 1, "width": 1920, "height": 1080, "left": 0, "top": 0},
+            {"index": 2, "width": 1280, "height": 720, "left": 1920, "top": 0},
+        ],
+    }
+    fake_injector.handle_message.assert_not_called()
+
+
+def test_request_monitor_list_message_works_when_input_injector_is_unavailable(monkeypatch):
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.InputInjector",
+        lambda screen_size: (_ for _ in ()).throw(RuntimeError("no display available")),
+    )
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.list_monitors",
+        lambda: [{"index": 1, "width": 1920, "height": 1080, "left": 0, "top": 0}],
+    )
+
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+    assert peer._input_injector is None
+    peer._input_channel.send = MagicMock()
+
+    # Must not raise even though there's no injector.
+    peer._input_channel.emit("message", json.dumps({"type": "request-monitor-list"}))
+
+    peer._input_channel.send.assert_called_once()
+    sent = json.loads(peer._input_channel.send.call_args[0][0])
+    assert sent["type"] == "monitor-list"
+
+
 @pytest.mark.asyncio
 async def test_close_stops_the_input_injector():
     """The host replaces its peer connection on every peer-joined. If

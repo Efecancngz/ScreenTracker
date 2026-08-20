@@ -114,6 +114,69 @@ describe("useMonitorSelection", () => {
     expect(channel.send).not.toHaveBeenCalled();
   });
 
+  it("sends request-monitor-list immediately when the channel is already open on mount", () => {
+    const channel = new FakeDataChannel("open");
+    renderHook(() => useMonitorSelection(channel as unknown as RTCDataChannel));
+
+    expect(channel.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "request-monitor-list" })
+    );
+  });
+
+  it("sends request-monitor-list when the channel opens after mount", () => {
+    const channel = new FakeDataChannel("connecting");
+    renderHook(() => useMonitorSelection(channel as unknown as RTCDataChannel));
+
+    expect(channel.send).not.toHaveBeenCalled();
+
+    act(() => {
+      channel.readyState = "open";
+      channel.dispatchEvent(new Event("open"));
+    });
+
+    expect(channel.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "request-monitor-list" })
+    );
+  });
+
+  it("populates monitors from a monitor-list received after a request-monitor-list race", () => {
+    const channel = new FakeDataChannel("connecting");
+    const { result } = renderHook(() =>
+      useMonitorSelection(channel as unknown as RTCDataChannel)
+    );
+
+    act(() => {
+      channel.readyState = "open";
+      channel.dispatchEvent(new Event("open"));
+    });
+    expect(channel.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "request-monitor-list" })
+    );
+
+    act(() => {
+      channel.receive({
+        type: "monitor-list",
+        monitors: [{ index: 1, width: 1920, height: 1080, left: 0, top: 0 }],
+      });
+    });
+
+    expect(result.current.monitors).toHaveLength(1);
+    expect(result.current.activeIndex).toBe(1);
+  });
+
+  it("removes both the message and open listeners on cleanup", () => {
+    const channel = new FakeDataChannel();
+    const removeSpy = vi.spyOn(channel, "removeEventListener");
+    const { unmount } = renderHook(() =>
+      useMonitorSelection(channel as unknown as RTCDataChannel)
+    );
+
+    unmount();
+
+    expect(removeSpy).toHaveBeenCalledWith("message", expect.any(Function));
+    expect(removeSpy).toHaveBeenCalledWith("open", expect.any(Function));
+  });
+
   it("resets to no monitors when the channel becomes null", () => {
     const channel = new FakeDataChannel();
     const { result, rerender } = renderHook(

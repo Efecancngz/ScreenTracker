@@ -148,9 +148,7 @@ class HostPeerConnection:
 
         @self._input_channel.on("open")
         def _on_input_channel_open() -> None:
-            self._input_channel.send(
-                json.dumps({"type": "monitor-list", "monitors": list_monitors()})
-            )
+            self._send_monitor_list()
 
         @self._input_channel.on("message")
         def _on_input_message(message: str) -> None:
@@ -161,13 +159,40 @@ class HostPeerConnection:
             if payload.get("type") == "select-monitor":
                 self._handle_select_monitor(payload)
                 return
+            if payload.get("type") == "request-monitor-list":
+                self._send_monitor_list()
+                return
             if self._input_injector is None:
                 return
             self._input_injector.handle_message(payload)
 
+    def _send_monitor_list(self) -> None:
+        """Build and send the monitor-list payload, degrading gracefully
+        instead of propagating.
+
+        list_monitors() constructs mss.mss() internally, which raises on a
+        host without a usable display (e.g. headless Linux). This handler
+        runs synchronously inside a pyee event callback, so an uncaught
+        exception here would propagate into aiortc's SCTP receive task and
+        can take down the whole data transport (and therefore video) --
+        strictly worse than simply not having the monitor list. send()
+        itself can also raise InvalidStateError if the channel closes
+        between the triggering event and this call.
+        """
+        try:
+            monitors = list_monitors()
+            self._input_channel.send(json.dumps({"type": "monitor-list", "monitors": monitors}))
+        except Exception as exc:
+            print(f"monitor-list unavailable: {exc}. Screen viewing will still work.")
+
     def _handle_select_monitor(self, payload: dict[str, Any]) -> None:
         index = payload.get("index")
-        monitor = next((m for m in list_monitors() if m["index"] == index), None)
+        try:
+            monitors = list_monitors()
+        except Exception as exc:
+            print(f"select-monitor: monitor list unavailable ({exc}), ignoring")
+            return
+        monitor = next((m for m in monitors if m["index"] == index), None)
         if monitor is None:
             print(f"select-monitor: unknown monitor index {index!r}, ignoring")
             return
