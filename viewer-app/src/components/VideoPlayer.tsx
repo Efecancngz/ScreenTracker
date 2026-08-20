@@ -90,6 +90,28 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
 
   return (
     <div className={styles.wrapper} ref={wrapperRef}>
+      {/* A toolbar strip outside the video's own box, not overlaid on top of
+          it -- these buttons used to sit absolutely positioned over the
+          video's corners, which are exactly where a remote desktop keeps its
+          own clickable things (a window's close button, a taskbar corner).
+          A tap meant for the remote screen was landing on our button instead. */}
+      <div className={styles.toolbar}>
+        <button
+          type="button"
+          className={styles.modeButton}
+          onClick={() => setPrimaryButton((prev) => (prev === "left" ? "right" : "left"))}
+        >
+          {primaryButton === "left" ? "🖱️ Left-click mode" : "🖱️ Right-click mode"}
+        </button>
+        <div className={styles.toolbarRight}>
+          <span className={inputReady ? `${styles.inputStatus} ${styles.inputReady}` : styles.inputStatus}>
+            {inputReady ? "Input active" : "Input connecting…"}
+          </span>
+          <button type="button" className={styles.fullscreenButton} onClick={() => void toggleFullscreen()}>
+            {isFullscreen ? "⤡ Exit fullscreen" : "⛶ Fullscreen"}
+          </button>
+        </div>
+      </div>
       <video
         className={styles.video}
         ref={videoRef}
@@ -108,19 +130,6 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
         onDragStart={(event) => event.preventDefault()}
         onContextMenu={(event) => event.preventDefault()}
       />
-      <span className={inputReady ? `${styles.inputStatus} ${styles.inputReady}` : styles.inputStatus}>
-        {inputReady ? "Input active" : "Input connecting…"}
-      </span>
-      <button
-        type="button"
-        className={styles.modeButton}
-        onClick={() => setPrimaryButton((prev) => (prev === "left" ? "right" : "left"))}
-      >
-        {primaryButton === "left" ? "🖱️ Left-click mode" : "🖱️ Right-click mode"}
-      </button>
-      <button type="button" className={styles.fullscreenButton} onClick={() => void toggleFullscreen()}>
-        {isFullscreen ? "⤡ Exit fullscreen" : "⛶ Fullscreen"}
-      </button>
     </div>
   );
 }
