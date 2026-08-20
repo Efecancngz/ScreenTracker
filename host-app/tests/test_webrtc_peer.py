@@ -1,14 +1,17 @@
+import asyncio
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 
-from screentracker_host.capture import Frame
+from screentracker_host.capture import Frame, ScreenCapturer
 from aiortc import RTCIceCandidate
 
 from screentracker_host.webrtc_peer import (
     HostPeerConnection,
+    MAX_PACING_DRIFT_SECONDS,
     STUN_SERVER_URL,
     ScreenCaptureTrack,
     TARGET_FPS,
@@ -98,10 +101,8 @@ async def test_add_ice_candidate_ignores_end_of_candidates_marker():
 
 @pytest.mark.asyncio
 async def test_recv_returns_video_frame_matching_capture_size(monkeypatch):
-    fake_frame = Frame(width=4, height=2, data=np.zeros((2, 4, 4), dtype=np.uint8))
-    monkeypatch.setattr(
-        "screentracker_host.webrtc_peer.capture_frame", lambda monitor_index: fake_frame
-    )
+    fake_frame = Frame(width=4, height=2, data=np.zeros((2, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(ScreenCapturer, "capture", lambda self: fake_frame)
 
     track = ScreenCaptureTrack()
     video_frame = await track.recv()
@@ -110,13 +111,38 @@ async def test_recv_returns_video_frame_matching_capture_size(monkeypatch):
     assert video_frame.height == 2
 
 
+def _patch_immediate_loop(monkeypatch):
+    """Replace the event loop used inside recv() with a stub whose
+    run_in_executor runs the target function synchronously in place. Tests
+    that need a deterministic time.monotonic() sequence would otherwise be
+    perturbed by the real event loop's internal timer reads while it waits
+    on a real executor thread.
+
+    Only use this for tests asserting on the exact monkeypatched
+    time.monotonic() sequence (pacing/drift-guard); the genuine-concurrency
+    test (test_recv_does_not_block_the_event_loop_during_capture) must NOT
+    use it, since it needs a real executor thread for capture() to actually
+    run concurrently with other coroutines -- an immediate/synchronous loop
+    would defeat the exact behavior it's verifying."""
+
+    class _ImmediateLoop:
+        def run_in_executor(self, executor, func, *args):
+            async def _runner():
+                return func(*args)
+
+            return _runner()
+
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.asyncio.get_event_loop", lambda: _ImmediateLoop()
+    )
+
+
 @pytest.mark.asyncio
 async def test_recv_paces_frames_to_target_fps(monkeypatch):
     """Verify that recv() sleeps to maintain TARGET_FPS frame pacing."""
-    fake_frame = Frame(width=4, height=2, data=np.zeros((2, 4, 4), dtype=np.uint8))
-    monkeypatch.setattr(
-        "screentracker_host.webrtc_peer.capture_frame", lambda monitor_index: fake_frame
-    )
+    fake_frame = Frame(width=4, height=2, data=np.zeros((2, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(ScreenCapturer, "capture", lambda self: fake_frame)
+    _patch_immediate_loop(monkeypatch)
 
     # Track sleep calls to verify pacing
     sleep_calls = []
@@ -154,6 +180,129 @@ async def test_recv_paces_frames_to_target_fps(monkeypatch):
     assert len(sleep_calls) == 2
     expected_sleep = 2 / TARGET_FPS - 0.1
     assert abs(sleep_calls[1] - expected_sleep) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_recv_does_not_block_the_event_loop_during_capture(monkeypatch):
+    """capture() must run off-loop (via the executor) so other coroutines
+    scheduled concurrently get a chance to run while a capture is in
+    flight, instead of being stalled for the capture's full duration."""
+    fake_frame = Frame(width=4, height=2, data=np.zeros((2, 4, 3), dtype=np.uint8))
+
+    def slow_capture(self):
+        time.sleep(0.05)
+        return fake_frame
+
+    monkeypatch.setattr(ScreenCapturer, "capture", slow_capture)
+
+    track = ScreenCaptureTrack()
+
+    marker_finished_at = None
+    capture_finished_at = None
+
+    async def marker():
+        nonlocal marker_finished_at
+        await asyncio.sleep(0)
+        marker_finished_at = time.monotonic()
+
+    async def do_recv():
+        nonlocal capture_finished_at
+        await track.recv()
+        capture_finished_at = time.monotonic()
+
+    await asyncio.gather(do_recv(), marker())
+
+    assert marker_finished_at is not None
+    assert capture_finished_at is not None
+    # The marker coroutine (a trivial asyncio.sleep(0) yield) must complete
+    # before the blocking capture does -- if capture() ran synchronously on
+    # the event loop, the marker couldn't run until recv() fully returned.
+    assert marker_finished_at < capture_finished_at
+
+
+@pytest.mark.asyncio
+async def test_recv_drift_guard_resets_pacing_after_long_stall(monkeypatch):
+    """A stall longer than MAX_PACING_DRIFT_SECONDS between recv() calls
+    (system sleep/wake, a long GC pause, a CPU spike) must reset
+    _next_frame_time to "now" rather than leave the track trying to send a
+    burst of frames to catch up."""
+    fake_frame = Frame(width=4, height=2, data=np.zeros((2, 4, 3), dtype=np.uint8))
+    monkeypatch.setattr(ScreenCapturer, "capture", lambda self: fake_frame)
+    _patch_immediate_loop(monkeypatch)
+
+    sleep_calls = []
+
+    async def mock_sleep(duration):
+        sleep_calls.append(duration)
+
+    monkeypatch.setattr("asyncio.sleep", mock_sleep)
+
+    # First recv happens at t=0.0. Second recv happens at t=10.0 -- a stall
+    # far bigger than MAX_PACING_DRIFT_SECONDS (1.0s).
+    times = [0.0, 0.0, 10.0, 10.0, 10.0, 10.0]
+    time_iter = iter(times)
+    monkeypatch.setattr(
+        "screentracker_host.webrtc_peer.time.monotonic", lambda: next(time_iter, 10.0)
+    )
+
+    track = ScreenCaptureTrack()
+
+    await track.recv()
+    assert len(sleep_calls) == 0
+
+    await track.recv()
+
+    # If the drift guard didn't fire, recv() would try to sleep for a
+    # negative/huge catch-up amount instead. Either way it must not sleep
+    # for anything resembling the ~10 second gap.
+    assert not any(duration > MAX_PACING_DRIFT_SECONDS for duration in sleep_calls)
+    # _next_frame_time was reset to (approximately) the post-jump "now"
+    # (10.0) plus one frame interval, not left near its pre-jump value.
+    assert abs(track._next_frame_time - (10.0 + 1 / TARGET_FPS)) < 1e-6
+
+
+@pytest.mark.asyncio
+async def test_recv_uses_screen_capturer_to_produce_frame(monkeypatch):
+    """recv() must go through ScreenCapturer.capture() (not mss or the old
+    capture_frame() directly) to build the returned VideoFrame."""
+    calls = []
+    fake_frame = Frame(width=6, height=3, data=np.zeros((3, 6, 3), dtype=np.uint8))
+
+    def stub_capture(self):
+        calls.append(self)
+        return fake_frame
+
+    monkeypatch.setattr(ScreenCapturer, "capture", stub_capture)
+
+    track = ScreenCaptureTrack()
+    assert isinstance(track._capturer, ScreenCapturer)
+
+    video_frame = await track.recv()
+
+    assert calls == [track._capturer]
+    assert video_frame.width == 6
+    assert video_frame.height == 3
+
+
+def test_stop_shuts_down_executor_and_closes_capturer_via_executor(monkeypatch):
+    """ScreenCaptureTrack.stop() (called by aiortc's RTCPeerConnection.close()
+    via its sender tracks) must release the executor thread and the mss
+    GDI handles. close() has the same thread-affinity constraint as
+    capture(), so it must be dispatched through the executor rather than
+    called directly from the event loop thread."""
+    close_calls = []
+    monkeypatch.setattr(ScreenCapturer, "close", lambda self: close_calls.append(self))
+
+    track = ScreenCaptureTrack()
+    track._executor.shutdown = MagicMock(wraps=track._executor.shutdown)
+
+    track.stop()
+
+    assert close_calls == [track._capturer]
+    track._executor.shutdown.assert_called_once()
+    # close() must have been dispatched to (and finished on) the executor
+    # before shutdown was called -- not called directly on this thread.
+    assert track._executor._shutdown is True
 
 
 def test_host_peer_connection_creates_labeled_input_data_channel(monkeypatch):
@@ -235,3 +384,19 @@ def test_input_message_is_silently_dropped_when_injector_failed_to_construct(mon
 
     # Must not crash even though there's no injector to forward the message to.
     peer._input_channel.emit("message", json.dumps(payload))
+
+
+@pytest.mark.asyncio
+async def test_close_stops_the_input_injector():
+    """The host replaces its peer connection on every peer-joined. If
+    closing one leaves its InputInjector running, that injector's touch
+    keepalive keeps injecting on pointer id 0 while the *next*
+    connection is using it, and drags oscillate between two positions."""
+    peer = HostPeerConnection(screen_size=(1920, 1080))
+    injector = peer._input_injector
+    assert injector is not None
+    injector.close = MagicMock()
+
+    await peer.close()
+
+    injector.close.assert_called_once()

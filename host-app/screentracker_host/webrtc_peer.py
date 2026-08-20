@@ -6,9 +6,9 @@ import json
 import os
 import time
 
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-import numpy as np
 from aiortc import (
     RTCConfiguration,
     RTCIceCandidate,
@@ -20,7 +20,7 @@ from aiortc import (
 from aiortc.sdp import candidate_from_sdp
 from av import VideoFrame
 
-from screentracker_host.capture import capture_frame, get_monitor_size
+from screentracker_host.capture import ScreenCapturer, get_monitor_size
 from screentracker_host.input_injector import InputInjector
 
 # A public STUN server is enough for most NATs; TURN is the relay fallback for
@@ -31,26 +31,38 @@ VIDEO_TIME_BASE = fractions.Fraction(1, 90000)
 TARGET_FPS = 15
 _PTS_STEP = int(VIDEO_TIME_BASE.denominator / TARGET_FPS)
 
+# Any stall longer than this is treated as "we fell behind for a reason
+# outside normal frame-to-frame variance" (system sleep/wake, a long GC
+# pause, a CPU spike) rather than something to catch up on frame-by-frame.
+MAX_PACING_DRIFT_SECONDS = 1.0
+
 
 class ScreenCaptureTrack(VideoStreamTrack):
     kind = "video"
 
     def __init__(self, monitor_index: int = 1) -> None:
         super().__init__()
-        self._monitor_index = monitor_index
+        self._capturer = ScreenCapturer(monitor_index)
+        self._executor = ThreadPoolExecutor(max_workers=1)
         self._pts = 0
         self._next_frame_time = time.monotonic()
 
     async def recv(self) -> VideoFrame:
-        # Pace frames to TARGET_FPS by sleeping until the next frame time
         now = time.monotonic()
+        # Drift guard: a long stall (sleep/wake, CPU spike) leaves
+        # _next_frame_time far behind wall-clock time; reset instead of
+        # sending a burst of frames trying to catch up.
+        if now - self._next_frame_time > MAX_PACING_DRIFT_SECONDS:
+            self._next_frame_time = now
+
         time_to_sleep = self._next_frame_time - now
         if time_to_sleep > 0:
             await asyncio.sleep(time_to_sleep)
 
-        frame = capture_frame(self._monitor_index)
-        rgb = frame.data[:, :, :3][:, :, ::-1]  # BGRA -> RGB
-        video_frame = VideoFrame.from_ndarray(np.ascontiguousarray(rgb), format="rgb24")
+        loop = asyncio.get_event_loop()
+        frame = await loop.run_in_executor(self._executor, self._capturer.capture)
+
+        video_frame = VideoFrame.from_ndarray(frame.data, format="rgb24")
         video_frame.pts = self._pts
         video_frame.time_base = VIDEO_TIME_BASE
         self._pts += _PTS_STEP
@@ -59,6 +71,20 @@ class ScreenCaptureTrack(VideoStreamTrack):
         self._next_frame_time += 1 / TARGET_FPS
 
         return video_frame
+
+    def stop(self) -> None:
+        """Called by aiortc (RTCPeerConnection.close() stops sender tracks)
+        to release capture resources. self._capturer.close() has the same
+        thread-affinity constraint as capture() -- mss's GDI handles live in
+        threading.local() on whichever thread lazily created them -- so it
+        must run on the executor's worker thread, not here on the event
+        loop thread. Dispatching close() through the executor is correct
+        (and cheap) even if capture() was never called, since close() is a
+        safe no-op when self._sct is still None.
+        """
+        super().stop()
+        self._executor.submit(self._capturer.close).result()
+        self._executor.shutdown(wait=True)
 
 
 def build_ice_servers() -> list[RTCIceServer]:
@@ -141,4 +167,6 @@ class HostPeerConnection:
         await self._pc.addIceCandidate(candidate)
 
     async def close(self) -> None:
+        if self._input_injector is not None:
+            self._input_injector.close()
         await self._pc.close()

@@ -46,6 +46,14 @@ function pointerEvent(type: string, clientX: number, clientY: number, pointerId 
   return new PointerEvent(type, { clientX, clientY, pointerId, bubbles: true });
 }
 
+function touchPointerEvent(type: string, clientX: number, clientY: number, pointerId = 1) {
+  return new PointerEvent(type, { clientX, clientY, pointerId, pointerType: "touch", bubbles: true });
+}
+
+function touchEvent(type: string, clientX: number, clientY: number) {
+  return new TouchEvent(type, { changedTouches: [{ clientX, clientY }] as unknown as Touch[], bubbles: true });
+}
+
 function sentMessages(channel: RTCDataChannel) {
   return (channel.send as any).mock.calls.map((call: any[]) => JSON.parse(call[0]));
 }
@@ -59,18 +67,25 @@ afterEach(() => {
   document.body.innerHTML = "";
 });
 
-function setUp(rect?: Partial<DOMRect>, videoSize?: { videoWidth?: number; videoHeight?: number }) {
+function setUp(
+  rect?: Partial<DOMRect>,
+  videoSize?: { videoWidth?: number; videoHeight?: number },
+  primaryButton: "left" | "right" = "left"
+) {
   const video = setupVideo(rect, videoSize);
   const channel = fakeChannel();
   const videoRef = createRef<HTMLVideoElement>();
   // @ts-expect-error - assigning a ref's current for the test
   videoRef.current = video;
-  renderHook(() => useInputControl({ videoRef, channel }));
-  return { video, channel };
+  const view = renderHook(
+    ({ primaryButton }) => useInputControl({ videoRef, channel, primaryButton }),
+    { initialProps: { primaryButton } }
+  );
+  return { video, channel, rerender: view.rerender };
 }
 
 describe("useInputControl", () => {
-  it("sends left-down immediately on touch and left-up on release (a tap)", () => {
+  it("sends left-down immediately on touch and left-up on release (a tap) in left mode", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
@@ -82,7 +97,37 @@ describe("useInputControl", () => {
     ]);
   });
 
-  it("keeps the left button held while the finger stays down without moving", () => {
+  it("sends right-down/up on tap when in right mode", () => {
+    const { video, channel } = setUp(undefined, undefined, "right");
+
+    video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
+    video.dispatchEvent(pointerEvent("pointerup", 100, 50));
+
+    expect(sentMessages(channel)).toEqual([
+      { type: "pointer-down", x: 0.5, y: 0.5, button: "right" },
+      { type: "pointer-up", x: 0.5, y: 0.5, button: "right" },
+    ]);
+  });
+
+  it("switching mode between gestures changes which button the next tap uses", () => {
+    const { video, channel, rerender } = setUp();
+
+    video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
+    video.dispatchEvent(pointerEvent("pointerup", 100, 50));
+    (channel.send as any).mockClear();
+
+    rerender({ primaryButton: "right" });
+
+    video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
+    video.dispatchEvent(pointerEvent("pointerup", 100, 50));
+
+    expect(sentMessages(channel)).toEqual([
+      { type: "pointer-down", x: 0.5, y: 0.5, button: "right" },
+      { type: "pointer-up", x: 0.5, y: 0.5, button: "right" },
+    ]);
+  });
+
+  it("keeps the primary button held while the finger stays down without moving", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
@@ -116,7 +161,7 @@ describe("useInputControl", () => {
     const videoRef = createRef<HTMLVideoElement>();
     // @ts-expect-error - test assignment
     videoRef.current = video;
-    renderHook(() => useInputControl({ videoRef, channel }));
+    renderHook(() => useInputControl({ videoRef, channel, primaryButton: "left" }));
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
     video.dispatchEvent(pointerEvent("pointerup", 100, 50));
@@ -144,13 +189,13 @@ describe("useInputControl", () => {
     ]);
   });
 
-  it("releases a held left button with a synthetic pointer-up on unmount", () => {
+  it("releases a held primary button with a synthetic pointer-up on unmount", () => {
     const video = setupVideo();
     const channel = fakeChannel();
     const videoRef = createRef<HTMLVideoElement>();
     // @ts-expect-error - test assignment
     videoRef.current = video;
-    const { unmount } = renderHook(() => useInputControl({ videoRef, channel }));
+    const { unmount } = renderHook(() => useInputControl({ videoRef, channel, primaryButton: "left" }));
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
     expect(sentMessages(channel)).toHaveLength(1);
@@ -169,7 +214,7 @@ describe("useInputControl", () => {
     const videoRef = createRef<HTMLVideoElement>();
     // @ts-expect-error - test assignment
     videoRef.current = video;
-    const { unmount } = renderHook(() => useInputControl({ videoRef, channel }));
+    const { unmount } = renderHook(() => useInputControl({ videoRef, channel, primaryButton: "left" }));
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
     video.dispatchEvent(pointerEvent("pointerup", 100, 50));
@@ -208,7 +253,7 @@ describe("useInputControl", () => {
     expect(channel.send).not.toHaveBeenCalled();
   });
 
-  it("releases the left button with a compensating pointer-up when a second finger joins", () => {
+  it("releases the held primary button with a compensating pointer-up when a second finger joins", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50, 1));
@@ -224,117 +269,46 @@ describe("useInputControl", () => {
     ]);
   });
 
-  it("sends a discrete right click for a quick two-finger tap (released before the hold threshold)", () => {
-    const { video, channel } = setUp();
-
-    video.dispatchEvent(pointerEvent("pointerdown", 80, 50, 1));
-    video.dispatchEvent(pointerEvent("pointerdown", 120, 50, 2));
-    (channel.send as any).mockClear(); // discard the initial left-down + its compensating left-up
-
-    video.dispatchEvent(pointerEvent("pointerup", 80, 50, 1));
-
-    // Right click at the midpoint of the two touches: ((80+120)/2, 50) -> x=0.5
-    expect(sentMessages(channel)).toEqual([
-      { type: "pointer-down", x: 0.5, y: 0.5, button: "right" },
-      { type: "pointer-up", x: 0.5, y: 0.5, button: "right" },
-    ]);
-  });
-
-  it("holds the right button down after two still fingers pass the hold threshold, and releases it on lift", () => {
-    const { video, channel } = setUp();
-
-    video.dispatchEvent(pointerEvent("pointerdown", 80, 50, 1));
-    video.dispatchEvent(pointerEvent("pointerdown", 120, 50, 2));
-    (channel.send as any).mockClear();
-
-    vi.advanceTimersByTime(400);
-    expect(sentMessages(channel)).toEqual([
-      { type: "pointer-down", x: 0.5, y: 0.5, button: "right" },
-    ]);
-
-    // Holding further must not send anything extra.
-    vi.advanceTimersByTime(2000);
-    expect(sentMessages(channel)).toEqual([
-      { type: "pointer-down", x: 0.5, y: 0.5, button: "right" },
-    ]);
-
-    video.dispatchEvent(pointerEvent("pointerup", 80, 50, 1));
-    expect(sentMessages(channel)).toEqual([
-      { type: "pointer-down", x: 0.5, y: 0.5, button: "right" },
-      { type: "pointer-up", x: 0.5, y: 0.5, button: "right" },
-    ]);
-  });
-
-  it("cancels the hold-promotion timer when the fingers move before the threshold elapses", () => {
+  it("two fingers always scroll from the first movement -- no click, no hold timer", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 60, 1));
     video.dispatchEvent(pointerEvent("pointerdown", 100, 40, 2));
-    vi.advanceTimersByTime(200); // partway through the hold threshold
-    (channel.send as any).mockClear();
+    (channel.send as any).mockClear(); // discard the cancelled single-finger down/up
 
+    // Holding still (even past what used to be the hold-promotion threshold)
+    // must never send a click of any kind now.
+    vi.advanceTimersByTime(2000);
+    expect(channel.send).not.toHaveBeenCalled();
+
+    // Both fingers move up by 30px each -> midpoint moves by 30px (mid 50 -> mid 20).
     video.dispatchEvent(pointerEvent("pointermove", 100, 30, 1));
     video.dispatchEvent(pointerEvent("pointermove", 100, 10, 2));
 
-    // Became a scroll, not a right-click hold — advancing past the original
-    // threshold must not retroactively fire a right-click.
-    vi.advanceTimersByTime(1000);
     const messages = sentMessages(channel);
     expect(messages.length).toBeGreaterThan(0);
     expect(messages.every((m: any) => m.type === "wheel")).toBe(true);
+
+    // Lifting a finger ends the scroll gesture without sending anything else.
+    (channel.send as any).mockClear();
+    video.dispatchEvent(pointerEvent("pointerup", 100, 30, 1));
+    video.dispatchEvent(pointerEvent("pointerup", 100, 10, 2));
+    expect(channel.send).not.toHaveBeenCalled();
   });
 
-  it("sends pointer-move while the two fingers move slightly during a held right click", () => {
+  it("a quick two-finger tap sends only wheel deltas (if any movement) and never a click", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 80, 50, 1));
     video.dispatchEvent(pointerEvent("pointerdown", 120, 50, 2));
-    vi.advanceTimersByTime(400);
     (channel.send as any).mockClear();
 
-    // Small movement, still under the scroll threshold, while held.
-    // New midpoint: ((85+120)/2, 50) = (102.5, 50) -> x = 102.5/200 = 0.5125
-    video.dispatchEvent(pointerEvent("pointermove", 85, 50, 1));
+    video.dispatchEvent(pointerEvent("pointerup", 80, 50, 1));
 
-    expect(sentMessages(channel)).toEqual([{ type: "pointer-move", x: 0.5125, y: 0.5 }]);
+    expect(channel.send).not.toHaveBeenCalled();
   });
 
-  it("releases a held right button with a compensating pointer-up on pointercancel", () => {
-    const { video, channel } = setUp();
-
-    video.dispatchEvent(pointerEvent("pointerdown", 80, 50, 1));
-    video.dispatchEvent(pointerEvent("pointerdown", 120, 50, 2));
-    vi.advanceTimersByTime(400);
-    (channel.send as any).mockClear();
-
-    video.dispatchEvent(pointerEvent("pointercancel", 80, 50, 1));
-
-    expect(sentMessages(channel)).toEqual([
-      { type: "pointer-up", x: 0.5, y: 0.5, button: "right" },
-    ]);
-  });
-
-  it("releases a held right button with a compensating pointer-up on unmount", () => {
-    const video = setupVideo();
-    const channel = fakeChannel();
-    const videoRef = createRef<HTMLVideoElement>();
-    // @ts-expect-error - test assignment
-    videoRef.current = video;
-    const { unmount } = renderHook(() => useInputControl({ videoRef, channel }));
-
-    video.dispatchEvent(pointerEvent("pointerdown", 80, 50, 1));
-    video.dispatchEvent(pointerEvent("pointerdown", 120, 50, 2));
-    vi.advanceTimersByTime(400);
-    (channel.send as any).mockClear();
-
-    unmount();
-
-    expect(sentMessages(channel)).toEqual([
-      { type: "pointer-up", x: 0.5, y: 0.5, button: "right" },
-    ]);
-  });
-
-  it("ignores a third finger during a two-finger gesture", () => {
+  it("ignores a third finger during a two-finger scroll gesture", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 80, 50, 1));
@@ -348,30 +322,7 @@ describe("useInputControl", () => {
     expect(channel.send).not.toHaveBeenCalled();
   });
 
-  it("relays a two-finger drag as wheel deltas instead of a right click", () => {
-    const { video, channel } = setUp();
-
-    video.dispatchEvent(pointerEvent("pointerdown", 100, 60, 1));
-    video.dispatchEvent(pointerEvent("pointerdown", 100, 40, 2));
-    (channel.send as any).mockClear(); // discard the cancelled single-finger hold
-
-    // Both fingers move up by 30px each -> past the threshold, and the
-    // midpoint moves by 30px (60,40 -> 30,10 => mid 50 -> mid 20).
-    video.dispatchEvent(pointerEvent("pointermove", 100, 30, 1));
-    video.dispatchEvent(pointerEvent("pointermove", 100, 10, 2));
-
-    const messages = sentMessages(channel);
-    expect(messages.every((m: any) => m.type === "wheel")).toBe(true);
-    expect(messages.length).toBeGreaterThan(0);
-
-    // Lifting a finger ends the scroll gesture without sending a click.
-    (channel.send as any).mockClear();
-    video.dispatchEvent(pointerEvent("pointerup", 100, 30, 1));
-    video.dispatchEvent(pointerEvent("pointerup", 100, 10, 2));
-    expect(channel.send).not.toHaveBeenCalled();
-  });
-
-  it("releases a held left button on pointercancel", () => {
+  it("releases a held primary button on pointercancel", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50, 1));
@@ -389,7 +340,7 @@ describe("useInputControl", () => {
     expect(channel.send).not.toHaveBeenCalled();
   });
 
-  it("does not send a right click when a two-finger tap is cancelled", () => {
+  it("ending a two-finger scroll via pointercancel sends nothing further", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 80, 50, 1));
@@ -401,7 +352,7 @@ describe("useInputControl", () => {
     expect(channel.send).not.toHaveBeenCalled();
   });
 
-  it("releases a held left button and held keys on window blur", () => {
+  it("releases a held primary button and held keys on window blur", () => {
     const { video, channel } = setUp();
 
     video.dispatchEvent(pointerEvent("pointerdown", 100, 50));
@@ -426,7 +377,7 @@ describe("useInputControl", () => {
     const videoRef = createRef<HTMLVideoElement>();
     // @ts-expect-error - test assignment
     videoRef.current = video;
-    const { unmount } = renderHook(() => useInputControl({ videoRef, channel }));
+    const { unmount } = renderHook(() => useInputControl({ videoRef, channel, primaryButton: "left" }));
 
     window.dispatchEvent(new KeyboardEvent("keydown", { key: "Alt" }));
     expect(sentMessages(channel)).toEqual([{ type: "key-down", key: "Alt" }]);
@@ -437,5 +388,87 @@ describe("useInputControl", () => {
       { type: "key-down", key: "Alt" },
       { type: "key-up", key: "Alt" },
     ]);
+  });
+
+  describe("touch-events fallback after a Chrome-for-Android pointercancel", () => {
+    // Observed live on a real Android Chrome device: mid-drag, the browser
+    // fires pointercancel on the primary touch pointer while the underlying
+    // native touch (touchmove, eventually touchend) keeps delivering real
+    // data for the same finger -- Chrome abandons the Pointer Events
+    // abstraction for that gesture without the finger actually lifting.
+    // Falling back to raw Touch Events for a touch-originated primary
+    // gesture keeps the drag alive instead of cutting it off at whatever
+    // point pointercancel happened to fire.
+
+    it("does not release the gesture when pointercancel fires for a touch-originated primary pointer", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      (channel.send as any).mockClear();
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it("keeps relaying pointer-move from raw touchmove once pointercancel has interrupted a touch gesture", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+      (channel.send as any).mockClear();
+
+      video.dispatchEvent(touchEvent("touchmove", 150, 60));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-move", x: 0.75, y: 0.6 }]);
+    });
+
+    it("finally releases the gesture on touchend once pointercancel had interrupted it", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+      video.dispatchEvent(touchEvent("touchmove", 150, 60));
+      (channel.send as any).mockClear();
+
+      video.dispatchEvent(touchEvent("touchend", 150, 60));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-up", x: 0.75, y: 0.6, button: "left" }]);
+    });
+
+    it("also releases the gesture on touchcancel once pointercancel had interrupted it", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      video.dispatchEvent(touchPointerEvent("pointercancel", 100, 50, 1));
+      (channel.send as any).mockClear();
+
+      video.dispatchEvent(touchEvent("touchcancel", 100, 50));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-up", x: 0.5, y: 0.5, button: "left" }]);
+    });
+
+    it("ignores raw touchmove while no pointercancel has interrupted the gesture, to avoid double-sending", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(touchPointerEvent("pointerdown", 100, 50, 1));
+      (channel.send as any).mockClear();
+
+      // A normal (non-cancelled) touch fires touchmove and pointermove for
+      // the same physical movement -- the fallback listener must stay
+      // silent here, or every ordinary drag would double-send pointer-move.
+      video.dispatchEvent(touchEvent("touchmove", 150, 60));
+
+      expect(channel.send).not.toHaveBeenCalled();
+    });
+
+    it("still releases immediately on pointercancel for a mouse-originated primary pointer (unchanged behavior)", () => {
+      const { video, channel } = setUp();
+
+      video.dispatchEvent(pointerEvent("pointerdown", 100, 50, 1));
+      (channel.send as any).mockClear();
+      video.dispatchEvent(pointerEvent("pointercancel", 100, 50, 1));
+
+      expect(sentMessages(channel)).toEqual([{ type: "pointer-up", x: 0.5, y: 0.5, button: "left" }]);
+    });
   });
 });

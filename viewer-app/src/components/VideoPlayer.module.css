@@ -9,33 +9,55 @@
 }
 
 .wrapper {
-  position: relative;
+  display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
 }
 
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--surface);
+  flex: none;
+}
+
+.toolbarRight {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .video {
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   object-fit: contain;
   background: var(--bg);
   touch-action: none;
-  /* Prevent the native "hold to save/share this media" popup on long-press
-     (iOS Safari's callout menu, and the equivalent long-press selection UI
-     on other mobile browsers) so a long-press always drives right-click
-     input control instead of a system menu. */
+  /* touch-action:none stops the browser from treating a touch as pan/scroll/
+     zoom, but a <video>/<img> is ALSO natively draggable in Chrome/Blink --
+     a completely separate gesture subsystem that touch-action doesn't
+     govern. On Android Chrome this fires pointercancel at a small, fixed,
+     time-independent displacement (observed: 8-9px regardless of whether
+     the drag took 227ms or 6+s) once the browser commits to "the user is
+     dragging this media element out", which was cutting every drag short
+     right at that threshold. -webkit-user-drag: none turns that off.
+     (Distinct from -webkit-touch-callout/-webkit-user-select below, which
+     only cover iOS Safari's long-press "save/share" callout menu.) */
+  -webkit-user-drag: none;
   -webkit-touch-callout: none;
   -webkit-user-select: none;
   user-select: none;
 }
 
 .inputStatus {
-  position: absolute;
-  bottom: var(--space-2);
-  right: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--bg);
   color: var(--text-secondary);
   font-family: var(--font-display);
   font-size: 12px;
@@ -46,13 +68,10 @@
 }
 
 .fullscreenButton {
-  position: absolute;
-  top: var(--space-2);
-  right: var(--space-2);
   padding: var(--space-1) var(--space-2);
   border: none;
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--bg);
   color: var(--text-secondary);
   font-family: var(--font-display);
   font-size: 12px;
@@ -60,5 +79,20 @@
 }
 
 .fullscreenButton:hover {
+  color: var(--accent);
+}
+
+.modeButton {
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-radius: var(--radius);
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.modeButton:hover {
   color: var(--accent);
 }

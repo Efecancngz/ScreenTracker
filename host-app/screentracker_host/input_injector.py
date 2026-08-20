@@ -1,3 +1,5 @@
+import sys
+
 from pynput.keyboard import Key
 from pynput import keyboard, mouse
 from pynput.mouse import Button
@@ -57,16 +59,51 @@ _BUTTON_MAP: dict[str, Button] = {"left": Button.left, "right": Button.right}
 
 
 class InputInjector:
-    """Translates DataChannel input messages into OS-level events via pynput.
-    Never raises: a bad message or a permissions error (e.g. missing macOS
-    Accessibility access) is caught and logged once, not left to crash the
-    host app's main loop."""
+    """Translates DataChannel input messages into OS-level events.
+
+    Left-button pointer events (drag-and-drop, clicks) go through
+    Windows' SendInput API when available -- it produces a real input
+    event stream that Windows Explorer's drag-and-drop (DoDragDrop)
+    recognizes. (pynput's own mouse-position setter uses SetCursorPos,
+    which moves the cursor but generates no input event at all, so it
+    can't drive a drag -- a naive earlier attempt at this concluded
+    synthetic input couldn't drag files in Explorer at all, when it had
+    only ruled out SetCursorPos.) Right-click, scroll, and keyboard stay
+    on pynput -- they're discrete gestures the client already translates
+    into distinct actions, not something that needs a live drag gesture
+    recognized.
+
+    Never raises: a bad message or a permissions error (e.g. missing
+    macOS Accessibility access) is caught and logged once, not left to
+    crash the host app's main loop.
+    """
 
     def __init__(self, screen_size: tuple[int, int]) -> None:
         self._screen_width, self._screen_height = screen_size
         self._mouse = mouse.Controller()
         self._keyboard = keyboard.Controller()
         self._warned = False
+        # Which button (if any) is currently "held" from the last
+        # pointer-down that hasn't yet seen its matching pointer-up.
+        # pointer-move messages carry no button field, so this is how
+        # they're routed to the same sink pointer-down used.
+        self._active_button: str | None = None
+        self._mouse_injector = self._build_mouse_injector()
+
+    def _build_mouse_injector(self) -> object | None:
+        if sys.platform != "win32":
+            return None
+
+        try:
+            from screentracker_host.mouse_injector import MouseInjector
+
+            return MouseInjector()
+        except Exception as exc:
+            print(
+                f"Mouse injection unavailable ({exc}); drag-and-drop may not "
+                "work correctly, but clicks and other input will still work."
+            )
+            return None
 
     def handle_message(self, message: dict) -> None:
         try:
@@ -83,13 +120,37 @@ class InputInjector:
     def _dispatch(self, message: dict) -> None:
         msg_type = message.get("type")
         if msg_type == "pointer-down":
-            self._move(message["x"], message["y"])
-            self._mouse.press(_BUTTON_MAP[message.get("button", "left")])
+            button = message.get("button", "left")
+            pixels = normalize_to_pixels(
+                message["x"], message["y"], self._screen_width, self._screen_height
+            )
+            self._active_button = button
+            if button == "left" and self._mouse_injector is not None:
+                self._mouse_injector.down(*pixels)
+            else:
+                self._mouse.position = pixels
+                self._mouse.press(_BUTTON_MAP[button])
         elif msg_type == "pointer-move":
-            self._move(message["x"], message["y"])
+            pixels = normalize_to_pixels(
+                message["x"], message["y"], self._screen_width, self._screen_height
+            )
+            if self._active_button == "left" and self._mouse_injector is not None:
+                self._mouse_injector.move(*pixels)
+            else:
+                self._mouse.position = pixels
         elif msg_type == "pointer-up":
-            self._move(message["x"], message["y"])
-            self._mouse.release(_BUTTON_MAP[message.get("button", "left")])
+            button = message.get("button", "left")
+            pixels = normalize_to_pixels(
+                message["x"], message["y"], self._screen_width, self._screen_height
+            )
+            try:
+                if button == "left" and self._mouse_injector is not None:
+                    self._mouse_injector.up(*pixels)
+                else:
+                    self._mouse.position = pixels
+                    self._mouse.release(_BUTTON_MAP[button])
+            finally:
+                self._active_button = None
         elif msg_type == "wheel":
             dx, dy = wheel_delta_to_scroll_units(message.get("deltaX", 0), message.get("deltaY", 0))
             self._mouse.scroll(dx, dy)
@@ -98,5 +159,8 @@ class InputInjector:
         elif msg_type == "key-up":
             self._keyboard.release(resolve_key(message["key"]))
 
-    def _move(self, x: float, y: float) -> None:
-        self._mouse.position = normalize_to_pixels(x, y, self._screen_width, self._screen_height)
+    def close(self) -> None:
+        """No-op: kept so HostPeerConnection.close() can call it
+        unconditionally regardless of which injector backs this
+        instance. SendInput has no persistent contact/timer state to
+        tear down (unlike the old touch-injection keepalive chain)."""

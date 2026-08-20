@@ -1,22 +1,22 @@
 import { useEffect, type RefObject } from "react";
 
-// How far a finger has to move from where it touched down before a
-// two-finger gesture is treated as a scroll instead of a right-click hold.
-const TWO_FINGER_MOVE_THRESHOLD_PX = 20;
-// How long two fingers have to stay down without moving before the gesture
-// is promoted to a held right button (mirrors a real mouse's right button:
-// press, hold, release — not a discrete click fired only at release time).
-const TWO_FINGER_HOLD_MS = 400;
+export type PrimaryButton = "left" | "right";
 
 interface UseInputControlOptions {
   videoRef: RefObject<HTMLVideoElement | null>;
   channel: RTCDataChannel | null;
+  // Which mouse button single-finger press/drag/release simulates. A mode
+  // toggle in the UI switches this, rather than trying to infer intent
+  // from touch timing/finger count — that used to make two fingers double
+  // as both scroll AND a held/discrete right click, which was ambiguous to
+  // use and to reason about. Two fingers are now scroll only.
+  primaryButton: PrimaryButton;
 }
 
 type Point = { x: number; y: number };
-type TrackedTouch = { startX: number; startY: number; clientX: number; clientY: number };
+type TrackedTouch = { clientX: number; clientY: number };
 
-export function useInputControl({ videoRef, channel }: UseInputControlOptions): void {
+export function useInputControl({ videoRef, channel, primaryButton }: UseInputControlOptions): void {
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -53,35 +53,69 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
       return { x, y };
     }
 
-    // Single finger: press = left button down, move = drag, release = left
-    // button up. This mirrors a real mouse button directly, including
+    // Single finger: press = primaryButton down, move = drag, release =
+    // primaryButton up. This mirrors a real mouse button directly, including
     // holding it in place with no movement needed — there is no separate
     // "hold" gesture, pressing and not lifting simply keeps the button down.
     let primaryPointerId: number | null = null;
     let primaryLastPoint: Point | null = null;
     let primaryLastClientX = 0;
     let primaryLastClientY = 0;
+    // Was the current primary gesture started by a touch? Chrome on Android
+    // has been observed to fire pointercancel on a touch-originated primary
+    // pointer mid-drag while the underlying native touch (touchmove, then
+    // eventually touchend) keeps delivering real data for the same
+    // finger -- Chrome abandons the Pointer Events abstraction for that
+    // gesture without the finger actually lifting. touchFallbackActive
+    // tracks whether we're currently bridging such an interrupted gesture
+    // via raw Touch Events instead of ending it. Gated on pointerType so a
+    // real desktop mouse's pointercancel (which has no such quirk, and has
+    // no accompanying touch events to fall back to) still releases
+    // immediately as before.
+    let primaryIsTouch = false;
+    let touchFallbackActive = false;
+    // The button this specific gesture is using — captured at pointer-down
+    // from the current primaryButton, so a mode switch mid-gesture (rare,
+    // but the button could in principle change between down and up) can't
+    // send a down with one button and an up with another.
+    let primaryButtonHeld: PrimaryButton | null = null;
 
-    // Two fingers: held in place past TWO_FINGER_HOLD_MS with no scroll-worthy
-    // movement -> promoted to a held right button (mirrors the single-finger
-    // left button, including drag-while-held). Movement past the threshold
-    // before that timer fires -> a scroll instead. A quick release before
-    // either happens still resolves as a discrete right click, the same way
-    // a fast press-release of a real mouse button is still a click.
+    // Two fingers: always a scroll, from the very first movement. There is
+    // no click/hold sub-state here anymore — right-click now comes from the
+    // primaryButton mode instead, so a second gesture vocabulary for it on
+    // two fingers would just be redundant and ambiguous with scrolling.
     const twoFingerTouches = new Map<number, TrackedTouch>();
-    let twoFingerMode: "pending" | "scroll" | "right-hold" | null = null;
-    let twoFingerHoldTimer: ReturnType<typeof setTimeout> | null = null;
+    let twoFingerActive = false;
     let scrollLastMidpoint: Point | null = null;
-    let rightHoldPoint: Point | null = null;
 
     const pressedKeys = new Set<string>();
 
     function releasePrimary() {
       if (primaryPointerId === null) return;
       const point = primaryLastPoint;
+      const button = primaryButtonHeld;
       primaryPointerId = null;
       primaryLastPoint = null;
-      if (point) send({ type: "pointer-up", x: point.x, y: point.y, button: "left" });
+      primaryButtonHeld = null;
+      primaryIsTouch = false;
+      touchFallbackActive = false;
+      if (point && button) send({ type: "pointer-up", x: point.x, y: point.y, button });
+    }
+
+    // Shared by handlePointerMove's primary branch and the touchmove
+    // fallback below -- both ultimately just have a raw client point to
+    // relay as the gesture's current position.
+    function movePrimaryTo(clientX: number, clientY: number) {
+      primaryLastClientX = clientX;
+      primaryLastClientY = clientY;
+      const point = toNormalized(clientX, clientY);
+      // Outside the displayed picture (letterbox bars): nothing meaningful
+      // to report at this instant, but the gesture itself stays alive and
+      // the last known-good position is kept for the eventual release.
+      if (point) {
+        primaryLastPoint = point;
+        send({ type: "pointer-move", x: point.x, y: point.y });
+      }
     }
 
     function releaseHeldKeys() {
@@ -96,60 +130,32 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
     }
 
     function releaseTwoFingerGesture() {
-      if (twoFingerHoldTimer) {
-        clearTimeout(twoFingerHoldTimer);
-        twoFingerHoldTimer = null;
-      }
-      if (twoFingerMode === "right-hold" && rightHoldPoint) {
-        send({ type: "pointer-up", x: rightHoldPoint.x, y: rightHoldPoint.y, button: "right" });
-      }
       twoFingerTouches.clear();
-      twoFingerMode = null;
+      twoFingerActive = false;
       scrollLastMidpoint = null;
-      rightHoldPoint = null;
-    }
-
-    function promoteToRightHold() {
-      twoFingerHoldTimer = null;
-      if (twoFingerMode !== "pending") return;
-      const [a, b] = Array.from(twoFingerTouches.values());
-      const mid = midpoint(a, b);
-      const point = toNormalized(mid.x, mid.y);
-      twoFingerMode = "right-hold";
-      if (point) {
-        rightHoldPoint = point;
-        send({ type: "pointer-down", x: point.x, y: point.y, button: "right" });
-      }
     }
 
     function handlePointerDown(event: PointerEvent) {
-      // A two-finger gesture (pending/scroll/right-hold) already tracks two
-      // touches; ignore a third finger entirely rather than clobbering it.
-      if (twoFingerMode) return;
+      // A two-finger scroll already tracks two touches; ignore a third
+      // finger entirely rather than clobbering it.
+      if (twoFingerActive) return;
 
       if (primaryPointerId !== null && event.pointerId !== primaryPointerId) {
         // A second finger joined while the first was held: cancel that
-        // single-finger hold (compensating pointer-up) and start tracking a
-        // two-finger gesture instead. Which one it becomes — a held right
-        // button or a scroll — isn't decided until it resolves (see below).
+        // single-finger hold (compensating pointer-up) and start a
+        // two-finger scroll instead.
         const firstTouch: TrackedTouch = {
-          startX: primaryLastClientX,
-          startY: primaryLastClientY,
           clientX: primaryLastClientX,
           clientY: primaryLastClientY,
         };
         const firstPointerId = primaryPointerId;
         releasePrimary();
 
+        const secondTouch: TrackedTouch = { clientX: event.clientX, clientY: event.clientY };
         twoFingerTouches.set(firstPointerId, firstTouch);
-        twoFingerTouches.set(event.pointerId, {
-          startX: event.clientX,
-          startY: event.clientY,
-          clientX: event.clientX,
-          clientY: event.clientY,
-        });
-        twoFingerMode = "pending";
-        twoFingerHoldTimer = setTimeout(promoteToRightHold, TWO_FINGER_HOLD_MS);
+        twoFingerTouches.set(event.pointerId, secondTouch);
+        twoFingerActive = true;
+        scrollLastMidpoint = midpoint(firstTouch, secondTouch);
         return;
       }
 
@@ -166,42 +172,17 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
       primaryLastPoint = point;
       primaryLastClientX = event.clientX;
       primaryLastClientY = event.clientY;
-      send({ type: "pointer-down", x: point.x, y: point.y, button: "left" });
+      primaryButtonHeld = primaryButton;
+      primaryIsTouch = event.pointerType === "touch";
+      send({ type: "pointer-down", x: point.x, y: point.y, button: primaryButton });
     }
 
     function handlePointerMove(event: PointerEvent) {
-      if (twoFingerMode) {
+      if (twoFingerActive) {
         if (!twoFingerTouches.has(event.pointerId)) return;
-        twoFingerTouches.set(event.pointerId, {
-          ...twoFingerTouches.get(event.pointerId)!,
-          clientX: event.clientX,
-          clientY: event.clientY,
-        });
+        twoFingerTouches.set(event.pointerId, { clientX: event.clientX, clientY: event.clientY });
         if (twoFingerTouches.size < 2) return;
         const [a, b] = Array.from(twoFingerTouches.values());
-
-        if (twoFingerMode === "pending") {
-          const moved =
-            Math.hypot(a.clientX - a.startX, a.clientY - a.startY) > TWO_FINGER_MOVE_THRESHOLD_PX ||
-            Math.hypot(b.clientX - b.startX, b.clientY - b.startY) > TWO_FINGER_MOVE_THRESHOLD_PX;
-          if (!moved) return;
-          if (twoFingerHoldTimer) {
-            clearTimeout(twoFingerHoldTimer);
-            twoFingerHoldTimer = null;
-          }
-          twoFingerMode = "scroll";
-          scrollLastMidpoint = { x: (a.startX + b.startX) / 2, y: (a.startY + b.startY) / 2 };
-        }
-
-        if (twoFingerMode === "right-hold") {
-          const holdMid = midpoint(a, b);
-          const point = toNormalized(holdMid.x, holdMid.y);
-          if (point) {
-            rightHoldPoint = point;
-            send({ type: "pointer-move", x: point.x, y: point.y });
-          }
-          return;
-        }
 
         const mid = midpoint(a, b);
         if (scrollLastMidpoint) {
@@ -219,34 +200,12 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
       }
 
       if (primaryPointerId === null || event.pointerId !== primaryPointerId) return;
-      primaryLastClientX = event.clientX;
-      primaryLastClientY = event.clientY;
-      const point = toNormalized(event.clientX, event.clientY);
-      // Outside the displayed picture (letterbox bars): nothing meaningful
-      // to report at this instant, but the gesture itself stays alive and
-      // the last known-good position is kept for the eventual release.
-      if (point) {
-        primaryLastPoint = point;
-        send({ type: "pointer-move", x: point.x, y: point.y });
-      }
+      movePrimaryTo(event.clientX, event.clientY);
     }
 
     function handlePointerUp(event: PointerEvent) {
-      if (twoFingerMode) {
+      if (twoFingerActive) {
         if (!twoFingerTouches.has(event.pointerId)) return;
-        if (twoFingerMode === "pending") {
-          // Released before the hold threshold or any scroll-worthy
-          // movement: a fast press-release is still a click, same as a
-          // real mouse button.
-          const [a, b] = Array.from(twoFingerTouches.values());
-          const tapMid = midpoint(a, b);
-          const point = toNormalized(tapMid.x, tapMid.y);
-          if (point) {
-            send({ type: "pointer-down", x: point.x, y: point.y, button: "right" });
-            send({ type: "pointer-up", x: point.x, y: point.y, button: "right" });
-          }
-        }
-        // No-ops for "pending"/"scroll"; sends the release for "right-hold".
         releaseTwoFingerGesture();
         return;
       }
@@ -261,11 +220,41 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
     function handlePointerCancel(event: PointerEvent) {
       // The browser/OS interrupted the gesture (edge swipe, notification
       // pull-down, pointer capture loss) so pointerup will never fire.
-      if (twoFingerMode) {
+      if (twoFingerActive) {
         if (twoFingerTouches.has(event.pointerId)) releaseTwoFingerGesture();
         return;
       }
       if (primaryPointerId === null || event.pointerId !== primaryPointerId) return;
+      if (primaryIsTouch) {
+        // Chrome-for-Android quirk (see touchFallbackActive's declaration):
+        // this pointer is cancelled, but the finger hasn't actually lifted
+        // -- native touchmove/touchend keep coming for it. Bridge the
+        // gesture across via raw Touch Events instead of ending it here.
+        touchFallbackActive = true;
+        return;
+      }
+      releasePrimary();
+    }
+
+    function handleTouchMove(event: TouchEvent) {
+      if (!touchFallbackActive) return;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      movePrimaryTo(touch.clientX, touch.clientY);
+    }
+
+    function handleTouchEnd(event: TouchEvent) {
+      if (!touchFallbackActive) return;
+      const touch = event.changedTouches[0];
+      if (touch) {
+        const point = toNormalized(touch.clientX, touch.clientY);
+        if (point) primaryLastPoint = point;
+      }
+      releasePrimary();
+    }
+
+    function handleTouchCancel() {
+      if (!touchFallbackActive) return;
       releasePrimary();
     }
 
@@ -297,6 +286,9 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
     video.addEventListener("pointermove", handlePointerMove);
     video.addEventListener("pointerup", handlePointerUp);
     video.addEventListener("pointercancel", handlePointerCancel);
+    video.addEventListener("touchmove", handleTouchMove);
+    video.addEventListener("touchend", handleTouchEnd);
+    video.addEventListener("touchcancel", handleTouchCancel);
     video.addEventListener("wheel", handleWheel);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
@@ -313,10 +305,13 @@ export function useInputControl({ videoRef, channel }: UseInputControlOptions): 
       video.removeEventListener("pointermove", handlePointerMove);
       video.removeEventListener("pointerup", handlePointerUp);
       video.removeEventListener("pointercancel", handlePointerCancel);
+      video.removeEventListener("touchmove", handleTouchMove);
+      video.removeEventListener("touchend", handleTouchEnd);
+      video.removeEventListener("touchcancel", handleTouchCancel);
       video.removeEventListener("wheel", handleWheel);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", handleBlur);
     };
-  }, [videoRef, channel]);
+  }, [videoRef, channel, primaryButton]);
 }

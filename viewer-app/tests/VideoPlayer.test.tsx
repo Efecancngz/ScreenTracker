@@ -34,6 +34,35 @@ describe("VideoPlayer", () => {
     expect(container.querySelector("video")).not.toBeNull();
   });
 
+  it("mutes the video element so Chrome's autoplay policy doesn't block playback", () => {
+    // Confirmed live: an unmuted <video autoPlay> got a live, correctly
+    // dimensioned MediaStream (readyState 4) but stayed paused at
+    // currentTime 0 -- Chrome's autoplay policy silently rejected it
+    // (NotAllowedError: "play() failed because the user didn't interact
+    // with the document first"). The host's capture track never carries
+    // audio, so muting costs nothing and makes autoplay always allowed.
+    const fakeStream = {} as MediaStream;
+    const { container } = render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
+    expect(container.querySelector("video")).toHaveProperty("muted", true);
+  });
+
+  it("explicitly calls play() when a stream is attached, instead of relying on the autoPlay attribute alone", () => {
+    // Confirmed live: even after muting fixed the NotAllowedError, the
+    // native autoPlay attribute still didn't start playback on its own --
+    // srcObject is assigned programmatically in a useEffect after mount,
+    // and browsers don't reliably re-run the autoplay algorithm for a
+    // MediaStream attached that way. Calling .play() explicitly once the
+    // stream is set is the documented, reliable way to start a
+    // programmatically-attached stream.
+    const play = vi.fn().mockResolvedValue(undefined);
+    HTMLMediaElement.prototype.play = play;
+    const fakeStream = {} as MediaStream;
+
+    render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
+
+    expect(play).toHaveBeenCalledTimes(1);
+  });
+
   it("shows the connecting status and updates to active once the channel opens", async () => {
     const fakeStream = {} as MediaStream;
     const channel = new FakeDataChannel("connecting");
@@ -56,6 +85,27 @@ describe("VideoPlayer", () => {
     render(<VideoPlayer stream={fakeStream} inputChannel={channel as unknown as RTCDataChannel} />);
 
     expect(screen.getByText(/input active/i)).toBeInTheDocument();
+  });
+
+  describe("click mode toggle", () => {
+    it("defaults to left-click mode", () => {
+      const fakeStream = {} as MediaStream;
+      render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
+
+      expect(screen.getByRole("button", { name: /left.?click/i })).toBeInTheDocument();
+    });
+
+    it("switches to right-click mode when clicked, and back to left on a second click", async () => {
+      const user = userEvent.setup();
+      const fakeStream = {} as MediaStream;
+      render(<VideoPlayer stream={fakeStream} inputChannel={null} />);
+
+      await user.click(screen.getByRole("button", { name: /left.?click/i }));
+      expect(screen.getByRole("button", { name: /right.?click/i })).toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /right.?click/i }));
+      expect(screen.getByRole("button", { name: /left.?click/i })).toBeInTheDocument();
+    });
   });
 
   describe("fullscreen toggle", () => {

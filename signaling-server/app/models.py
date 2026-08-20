@@ -49,6 +49,11 @@ class PeerDisconnectedMessage(BaseModel):
 class RegisterHostMessage(BaseModel):
     type: Literal["register-host"] = "register-host"
     host_id: str
+    # Proves ownership of host_id on every (re)registration -- host_id
+    # alone is known to any viewer that has ever paired with this host
+    # (relayed to them in pair-approved), so without this anyone who
+    # learned it could register the same host_id themselves and hijack it.
+    host_secret: str
 
 
 class AuthenticateMessage(BaseModel):

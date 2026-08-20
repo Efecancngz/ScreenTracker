@@ -24,7 +24,9 @@ class PairedDevices:
 
     def is_paired(self, device_id: str, token: str) -> bool:
         entry = self._devices.get(device_id)
-        return entry is not None and entry["token"] == token
+        # Constant-time comparison: this is a bearer-token check, and a
+        # naive == leaks how many leading characters matched via timing.
+        return entry is not None and secrets.compare_digest(entry["token"], token)
 
     def approve(self, device_id: str, label: str) -> str:
         token = secrets.token_urlsafe(24)

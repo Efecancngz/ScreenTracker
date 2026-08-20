@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useInputControl } from "../hooks/useInputControl";
+import { useInputControl, type PrimaryButton } from "../hooks/useInputControl";
 import styles from "./VideoPlayer.module.css";
 
 interface VideoPlayerProps {
@@ -12,14 +12,25 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [inputReady, setInputReady] = useState(inputChannel?.readyState === "open");
   const [isFullscreen, setIsFullscreen] = useState(false);
+  // Which button single-finger press/drag/release simulates. An explicit
+  // mode toggle instead of inferring intent from touch timing/finger count
+  // -- simpler to use and to reason about than the two-finger-hold gesture
+  // this replaced.
+  const [primaryButton, setPrimaryButton] = useState<PrimaryButton>("left");
 
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
+    if (!videoRef.current) return;
+    videoRef.current.srcObject = stream;
+    if (stream) {
+      // The autoPlay attribute alone isn't reliable for a stream attached
+      // programmatically after mount -- call play() explicitly. Muted (see
+      // below), so this is never blocked by the autoplay policy; catch is
+      // just to avoid an unhandled rejection if the element unmounts mid-call.
+      videoRef.current.play?.()?.catch(() => {});
     }
   }, [stream]);
 
-  useInputControl({ videoRef, channel: inputChannel });
+  useInputControl({ videoRef, channel: inputChannel, primaryButton });
 
   useEffect(() => {
     function handleFullscreenChange() {
@@ -79,19 +90,46 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
 
   return (
     <div className={styles.wrapper} ref={wrapperRef}>
+      {/* A toolbar strip outside the video's own box, not overlaid on top of
+          it -- these buttons used to sit absolutely positioned over the
+          video's corners, which are exactly where a remote desktop keeps its
+          own clickable things (a window's close button, a taskbar corner).
+          A tap meant for the remote screen was landing on our button instead. */}
+      <div className={styles.toolbar}>
+        <button
+          type="button"
+          className={styles.modeButton}
+          onClick={() => setPrimaryButton((prev) => (prev === "left" ? "right" : "left"))}
+        >
+          {primaryButton === "left" ? "🖱️ Left-click mode" : "🖱️ Right-click mode"}
+        </button>
+        <div className={styles.toolbarRight}>
+          <span className={inputReady ? `${styles.inputStatus} ${styles.inputReady}` : styles.inputStatus}>
+            {inputReady ? "Input active" : "Input connecting…"}
+          </span>
+          <button type="button" className={styles.fullscreenButton} onClick={() => void toggleFullscreen()}>
+            {isFullscreen ? "⤡ Exit fullscreen" : "⛶ Fullscreen"}
+          </button>
+        </div>
+      </div>
       <video
         className={styles.video}
         ref={videoRef}
         autoPlay
         playsInline
+        // The host's capture track never carries audio, so muting costs
+        // nothing here -- and it's required: Chrome's autoplay policy
+        // blocks an unmuted <video autoPlay> with NotAllowedError unless a
+        // user gesture just happened, even when the stream has no audio
+        // track at all. Confirmed live: the stream attached correctly
+        // (readyState 4, right dimensions) but stayed paused at
+        // currentTime 0 -- a black screen with a perfectly healthy stream,
+        // which also explains why touch input kept working underneath it.
+        muted
+        draggable={false}
+        onDragStart={(event) => event.preventDefault()}
         onContextMenu={(event) => event.preventDefault()}
       />
-      <span className={inputReady ? `${styles.inputStatus} ${styles.inputReady}` : styles.inputStatus}>
-        {inputReady ? "Input active" : "Input connecting…"}
-      </span>
-      <button type="button" className={styles.fullscreenButton} onClick={() => void toggleFullscreen()}>
-        {isFullscreen ? "⤡ Exit fullscreen" : "⛶ Fullscreen"}
-      </button>
     </div>
   );
 }

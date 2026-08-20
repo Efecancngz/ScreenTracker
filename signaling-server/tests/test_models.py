@@ -62,8 +62,11 @@ def test_parse_join_session_message_with_device_id():
 
 
 def test_parse_register_host_message():
-    parsed = parse_inbound_message({"type": "register-host", "host_id": "host-1"})
+    parsed = parse_inbound_message(
+        {"type": "register-host", "host_id": "host-1", "host_secret": "secret-1"}
+    )
     assert parsed.host_id == "host-1"
+    assert parsed.host_secret == "secret-1"
 
 
 def test_parse_authenticate_message():

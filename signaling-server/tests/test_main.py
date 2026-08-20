@@ -98,7 +98,7 @@ def test_viewer_disconnect_keeps_the_session_alive_for_a_reconnect():
 def test_viewer_disconnect_then_authenticate_reconnect_finds_the_live_session():
     client = TestClient(app)
     with client.websocket_connect("/ws") as host_ws:
-        host_ws.send_json({"type": "register-host", "host_id": "host-reconnect"})
+        host_ws.send_json({"type": "register-host", "host_id": "host-reconnect", "host_secret": "secret-reconnect"})
         host_ws.send_json({"type": "create-session"})
         host_ws.receive_json()  # session-created
 
@@ -125,6 +125,50 @@ def test_viewer_disconnect_then_authenticate_reconnect_finds_the_live_session():
             )
             peer_joined = host_ws.receive_json()
             assert peer_joined["type"] == "peer-joined"
+
+
+def test_authenticate_from_a_new_connection_with_the_same_device_id_reclaims_a_stale_slot():
+    # A mobile tab that's force-closed or killed in the background rarely
+    # sends a clean WebSocket close frame -- the server's WebSocketDisconnect
+    # handler never fires, so the old connection_id is never cleaned up on
+    # its own. The same device reconnecting (new connection_id, same
+    # persisted device_id) must be able to reclaim the slot instead of
+    # getting stuck behind a connection that's actually dead.
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as host_ws:
+        host_ws.send_json(
+            {"type": "register-host", "host_id": "host-reclaim", "host_secret": "secret-reclaim"}
+        )
+        host_ws.send_json({"type": "create-session"})
+        host_ws.receive_json()  # session-created
+
+        stale_ws = client.websocket_connect("/ws").__enter__()
+        try:
+            stale_ws.send_json(
+                {
+                    "type": "authenticate",
+                    "host_id": "host-reclaim",
+                    "device_id": "dev-stale",
+                    "token": "tok-1",
+                }
+            )
+            host_ws.receive_json()  # peer-joined for the stale connection
+
+            # stale_ws is never closed here -- it's left exactly as a
+            # force-closed mobile tab would look from the server's side.
+            with client.websocket_connect("/ws") as new_ws:
+                new_ws.send_json(
+                    {
+                        "type": "authenticate",
+                        "host_id": "host-reclaim",
+                        "device_id": "dev-stale",
+                        "token": "tok-1",
+                    }
+                )
+                peer_joined = host_ws.receive_json()
+                assert peer_joined["type"] == "peer-joined"
+        finally:
+            stale_ws.close()
 
 
 def test_host_disconnect_still_fully_removes_the_session():
@@ -250,7 +294,7 @@ def test_nonwebsocket_exception_still_cleans_up():
 def test_authenticate_with_valid_token_joins_without_a_code():
     client = TestClient(app)
     with client.websocket_connect("/ws") as host_ws:
-        host_ws.send_json({"type": "register-host", "host_id": "host-abc"})
+        host_ws.send_json({"type": "register-host", "host_id": "host-abc", "host_secret": "secret-abc"})
         host_ws.send_json({"type": "create-session"})
         host_ws.receive_json()  # session-created, session_id not needed here
 
@@ -337,3 +381,73 @@ def test_release_peer_frees_the_slot_for_a_new_joiner():
         )
         peer_joined = host_ws.receive_json()
         assert peer_joined == {"type": "peer-joined", "device_id": "dev-5", "token": None}
+
+
+def test_register_host_with_a_different_secret_does_not_hijack_an_existing_host_id():
+    """Before this, register-host had no ownership check at all -- any
+    connection could claim any host_id, silently overwriting the
+    legitimate host's registration. A paired viewer's later authenticate
+    for that host_id would then route to the impostor, including the
+    viewer's own auth token (relayed verbatim in peer-joined). The first
+    connection to register a host_id now "owns" it: later registrations
+    under the same host_id with a different secret are refused rather
+    than silently taking over."""
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as real_host_ws:
+        real_host_ws.send_json(
+            {"type": "register-host", "host_id": "shared-host-id", "host_secret": "real-secret"}
+        )
+        real_host_ws.send_json({"type": "create-session"})
+        real_host_ws.receive_json()  # session-created
+
+        with client.websocket_connect("/ws") as impostor_ws:
+            impostor_ws.send_json(
+                {"type": "register-host", "host_id": "shared-host-id", "host_secret": "wrong-secret"}
+            )
+            impostor_ws.send_json({"type": "create-session"})
+            impostor_ws.receive_json()  # session-created for the impostor's OWN session
+
+            with client.websocket_connect("/ws") as viewer_ws:
+                viewer_ws.send_json(
+                    {
+                        "type": "authenticate",
+                        "host_id": "shared-host-id",
+                        "device_id": "dev-1",
+                        "token": "victim-token",
+                    }
+                )
+                # Routed to the REAL host, not the impostor -- the impostor
+                # never sees the victim's token.
+                peer_joined = real_host_ws.receive_json()
+                assert peer_joined["type"] == "peer-joined"
+                assert peer_joined["token"] == "victim-token"
+
+
+def test_register_host_with_the_matching_secret_can_still_reconnect_under_a_new_connection():
+    """The legitimate host restarting (a new WebSocket connection, same
+    persisted host_secret) must still be able to reclaim its own
+    host_id -- ownership is proven by the secret, not by being the
+    original connection."""
+    client = TestClient(app)
+    with client.websocket_connect("/ws") as first_ws:
+        first_ws.send_json(
+            {"type": "register-host", "host_id": "restarting-host", "host_secret": "same-secret"}
+        )
+
+    with client.websocket_connect("/ws") as second_ws:
+        second_ws.send_json(
+            {"type": "register-host", "host_id": "restarting-host", "host_secret": "same-secret"}
+        )
+        second_ws.send_json({"type": "create-session"})
+        second_ws.receive_json()  # session-created
+
+        with client.websocket_connect("/ws") as viewer_ws:
+            viewer_ws.send_json(
+                {
+                    "type": "authenticate",
+                    "host_id": "restarting-host",
+                    "device_id": "dev-1",
+                    "token": "tok-1",
+                }
+            )
+            assert second_ws.receive_json()["type"] == "peer-joined"

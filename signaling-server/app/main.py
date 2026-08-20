@@ -1,4 +1,5 @@
 import logging
+import secrets
 import uuid
 from pathlib import Path
 
@@ -27,6 +28,13 @@ _connection_sessions: dict[str, str] = {}
 # host_id -> connection_id, so a returning paired device can find its host's
 # current session without ever typing a code
 _host_ids: dict[str, str] = {}
+# host_id -> the secret its first registrant proved ownership with. Without
+# this, register-host had no ownership check at all: any connection could
+# claim any host_id (learned by any viewer that ever paired with it, via
+# pair-approved) and hijack it, capturing a later victim's auth token via
+# the peer-joined relay. Never evicted -- a host_id is a long-lived,
+# persisted identity (host_identity.json), not a per-connection value.
+_host_secrets: dict[str, str] = {}
 
 _RELAYED_MESSAGE_TYPES = (
     "offer",
@@ -65,7 +73,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     {"type": "session-created", "session_id": session.session_id}
                 )
             elif message.type == "register-host":
-                _host_ids[message.host_id] = connection_id
+                _handle_register_host(connection_id, message.host_id, message.host_secret)
             elif message.type == "join-session":
                 await _handle_join(connection_id, message.session_id, message.device_id, websocket)
             elif message.type == "authenticate":
@@ -95,7 +103,7 @@ async def _handle_join(
         await _handle_join_failure(websocket, client_key, "rate-limited")
         return
 
-    if not await _claim_session(session_id, connection_id, client_key, websocket):
+    if not await _claim_session(session_id, connection_id, client_key, websocket, device_id):
         return
 
     _connection_sessions[connection_id] = session_id
@@ -120,7 +128,9 @@ async def _handle_authenticate(connection_id: str, message, websocket: WebSocket
         await _handle_join_failure(websocket, client_key, "not-found")
         return
 
-    if not await _claim_session(session_id, connection_id, client_key, websocket):
+    if not await _claim_session(
+        session_id, connection_id, client_key, websocket, message.device_id
+    ):
         return
 
     _connection_sessions[connection_id] = session_id
@@ -136,13 +146,22 @@ async def _handle_authenticate(connection_id: str, message, websocket: WebSocket
 
 
 async def _claim_session(
-    session_id: str, connection_id: str, client_key: str, websocket: WebSocket
+    session_id: str,
+    connection_id: str,
+    client_key: str,
+    websocket: WebSocket,
+    device_id: str | None = None,
 ) -> bool:
     """Try to claim session_id for connection_id. Sends the appropriate
     session-expired reply and records a rate-limit failure on any rejection.
     Returns True only if the claim succeeded."""
+    previous_session = session_manager.get_session(session_id)
+    previous_viewer_connection_id = (
+        previous_session.viewer_connection_id if previous_session else None
+    )
+
     try:
-        session_manager.join_session(session_id, connection_id)
+        session_manager.join_session(session_id, connection_id, device_id)
     except SessionNotFoundError:
         await _handle_join_failure(websocket, client_key, "not-found")
         return False
@@ -152,6 +171,21 @@ async def _claim_session(
     except SessionAlreadyClaimedError:
         await _handle_join_failure(websocket, client_key, "already-claimed")
         return False
+
+    if previous_viewer_connection_id is not None and previous_viewer_connection_id != connection_id:
+        # The same device_id reclaimed a slot still held by a different
+        # connection_id -- that old connection's WebSocket almost certainly
+        # died without a clean close (see Session.viewer_device_id). It'll
+        # never trigger _handle_disconnect on its own, so clean up its
+        # bookkeeping here and best-effort close it in case it's actually
+        # still alive somewhere and just never got a chance to notice.
+        _connection_sessions.pop(previous_viewer_connection_id, None)
+        stale_ws = _connections.pop(previous_viewer_connection_id, None)
+        if stale_ws is not None:
+            try:
+                await stale_ws.close()
+            except Exception:
+                pass
 
     rate_limiter.record_success(client_key)
     return True
@@ -167,6 +201,19 @@ async def _handle_join_failure(websocket: WebSocket, client_key: str, reason: st
     if rate_limiter.should_kick(client_key):
         logger.warning("Closing connection from %s after repeated failed join attempts", client_key)
         await websocket.close()
+
+
+def _handle_register_host(connection_id: str, host_id: str, host_secret: str) -> None:
+    known_secret = _host_secrets.get(host_id)
+    if known_secret is None:
+        # First time this host_id has ever been registered -- trust on
+        # first use, the only option with no central authority. From here
+        # on, only a connection presenting this same secret may claim it.
+        _host_secrets[host_id] = host_secret
+    elif not secrets.compare_digest(known_secret, host_secret):
+        logger.warning("Rejected register-host for %r: secret mismatch", host_id)
+        return
+    _host_ids[host_id] = connection_id
 
 
 def _handle_release_peer(connection_id: str) -> None:
