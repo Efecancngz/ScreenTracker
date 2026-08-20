@@ -19,8 +19,14 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
   const [primaryButton, setPrimaryButton] = useState<PrimaryButton>("left");
 
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.srcObject = stream;
+    if (!videoRef.current) return;
+    videoRef.current.srcObject = stream;
+    if (stream) {
+      // The autoPlay attribute alone isn't reliable for a stream attached
+      // programmatically after mount -- call play() explicitly. Muted (see
+      // below), so this is never blocked by the autoplay policy; catch is
+      // just to avoid an unhandled rejection if the element unmounts mid-call.
+      videoRef.current.play?.()?.catch(() => {});
     }
   }, [stream]);
 
@@ -89,6 +95,15 @@ export function VideoPlayer({ stream, inputChannel }: VideoPlayerProps) {
         ref={videoRef}
         autoPlay
         playsInline
+        // The host's capture track never carries audio, so muting costs
+        // nothing here -- and it's required: Chrome's autoplay policy
+        // blocks an unmuted <video autoPlay> with NotAllowedError unless a
+        // user gesture just happened, even when the stream has no audio
+        // track at all. Confirmed live: the stream attached correctly
+        // (readyState 4, right dimensions) but stayed paused at
+        // currentTime 0 -- a black screen with a perfectly healthy stream,
+        // which also explains why touch input kept working underneath it.
+        muted
         draggable={false}
         onDragStart={(event) => event.preventDefault()}
         onContextMenu={(event) => event.preventDefault()}
