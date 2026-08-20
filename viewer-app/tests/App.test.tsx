@@ -128,22 +128,50 @@ describe("App", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("retries automatically instead of erroring out when a paired viewer's auto-authenticate races a not-yet-registered host", async () => {
-    // Real-world race: start.bat launches the signaling server and host app
-    // together, so a viewer reconnecting at the same moment can authenticate
-    // before the host has finished re-registering with a freshly restarted
-    // signaling server. The host WILL be there moments later, so this
-    // deserves the same auto-retry peer-disconnected gets, not a dead end.
+  it("backs off between not-found retries instead of hammering the server instantly", async () => {
+    vi.useFakeTimers();
+    // Real bug found while live-testing the naive version of this retry: a
+    // host that takes more than an instant to finish create-session after
+    // register-host produces a STREAK of "not-found" responses, and a
+    // zero-delay retry sent one right after another, seconds' worth of
+    // attempts within the same event-loop tick -- tripping the server's
+    // own rate limiter (5 free failures) near-instantly and landing the
+    // viewer in a worse spot (locked out) than not retrying at all.
     storePairing({ hostId: "host-1", token: "tok-1" });
     render(<App />);
     const socket = FakeWebSocket.instances[0];
     act(() => socket.emitOpen());
-    expect(JSON.parse(socket.sent[0])).toMatchObject({ type: "authenticate", host_id: "host-1" });
+    expect(socket.sent).toHaveLength(1); // just the initial authenticate
 
     act(() => socket.emitMessage({ type: "session-expired", reason: "not-found" }));
+    // No immediate retry -- it must be scheduled, not sent synchronously.
+    expect(socket.sent).toHaveLength(1);
 
-    expect(JSON.parse(socket.sent[1])).toMatchObject({ type: "authenticate", host_id: "host-1" });
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(socket.sent).toHaveLength(2);
+    vi.useRealTimers();
+  });
+
+  it("gives up retrying not-found after a bounded number of attempts", async () => {
+    vi.useFakeTimers();
+    storePairing({ hostId: "host-1", token: "tok-1" });
+    render(<App />);
+    const socket = FakeWebSocket.instances[0];
+    act(() => socket.emitOpen());
+
+    for (let i = 0; i < 6; i++) {
+      act(() => socket.emitMessage({ type: "session-expired", reason: "not-found" }));
+      await act(async () => {
+        vi.advanceTimersByTime(15000);
+      });
+    }
+
+    // Eventually stops retrying and shows the same error a non-paired
+    // viewer would see, instead of silently retrying forever.
+    vi.useRealTimers();
+    expect(await screen.findByRole("alert")).toHaveTextContent("Session code not found.");
   });
 
   it("still shows the expired-session error for a manual join with no pairing to retry", async () => {
