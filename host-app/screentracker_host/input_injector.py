@@ -1,4 +1,3 @@
-import asyncio
 import sys
 
 from pynput.keyboard import Key
@@ -6,18 +5,6 @@ from pynput import keyboard, mouse
 from pynput.mouse import Button
 
 WHEEL_SCROLL_DIVISOR = 100.0
-
-# Confirmed via real on-device testing: an injected touch contact times out
-# on Windows if left idle for too long between injections -- observed as
-# GetLastError=1460 (ERROR_TIMEOUT) on the first call after an ~875ms gap,
-# then GetLastError=87 (ERROR_INVALID_PARAMETER) on every subsequent call
-# for that contact, since it no longer exists as far as the OS is
-# concerned. The exact threshold isn't documented, so this interval is
-# chosen with a wide safety margin under the smallest gap observed to
-# fail. Re-injecting the last known position at this interval whenever the
-# client isn't sending fresh pointer-move messages (a deliberately slow
-# drag, or a brief pause mid-drag) keeps the contact alive.
-TOUCH_KEEPALIVE_INTERVAL_SECONDS = 0.06
 
 # Browser KeyboardEvent.key values for named keys -> pynput's Key enum.
 # Anything not in this map is treated as a literal single character
@@ -75,14 +62,16 @@ class InputInjector:
     """Translates DataChannel input messages into OS-level events.
 
     Left-button pointer events (drag-and-drop, clicks) go through
-    Windows' Touch Injection API when available -- pynput's
-    SetCursorPos/SendInput-based mouse simulation moves the cursor
-    correctly but isn't recognized by Windows Explorer's drag-and-drop
-    (DoDragDrop), confirmed via isolated testing (see
-    docs/superpowers/specs/2026-08-19-touch-injection-drag-fix-design.md).
-    Right-click, scroll, and keyboard stay on pynput -- they're
-    synthetic gestures the client already translates into distinct
-    actions, not literal touch replication.
+    Windows' SendInput API when available -- it produces a real input
+    event stream that Windows Explorer's drag-and-drop (DoDragDrop)
+    recognizes. (pynput's own mouse-position setter uses SetCursorPos,
+    which moves the cursor but generates no input event at all, so it
+    can't drive a drag -- a naive earlier attempt at this concluded
+    synthetic input couldn't drag files in Explorer at all, when it had
+    only ruled out SetCursorPos.) Right-click, scroll, and keyboard stay
+    on pynput -- they're discrete gestures the client already translates
+    into distinct actions, not something that needs a live drag gesture
+    recognized.
 
     Never raises: a bad message or a permissions error (e.g. missing
     macOS Accessibility access) is caught and logged once, not left to
@@ -99,23 +88,19 @@ class InputInjector:
         # pointer-move messages carry no button field, so this is how
         # they're routed to the same sink pointer-down used.
         self._active_button: str | None = None
-        self._touch_injector = self._build_touch_injector()
-        # Last pixel position injected via TouchInjector, and the pending
-        # keepalive timer re-injecting it -- see TOUCH_KEEPALIVE_INTERVAL_SECONDS.
-        self._touch_keepalive_pixels: tuple[int, int] | None = None
-        self._touch_keepalive_handle: asyncio.TimerHandle | None = None
+        self._mouse_injector = self._build_mouse_injector()
 
-    def _build_touch_injector(self) -> object | None:
+    def _build_mouse_injector(self) -> object | None:
         if sys.platform != "win32":
             return None
 
         try:
-            from screentracker_host.touch_injector import TouchInjector
+            from screentracker_host.mouse_injector import MouseInjector
 
-            return TouchInjector()
+            return MouseInjector()
         except Exception as exc:
             print(
-                f"Touch injection unavailable ({exc}); drag-and-drop may not "
+                f"Mouse injection unavailable ({exc}); drag-and-drop may not "
                 "work correctly, but clicks and other input will still work."
             )
             return None
@@ -134,16 +119,17 @@ class InputInjector:
 
     def _dispatch(self, message: dict) -> None:
         msg_type = message.get("type")
+        if msg_type == "gesture-debug":  # DEBUG (uncommitted)
+            print(f"[DEBUG] gesture ended: reason={message.get('reason')}")
+            return
         if msg_type == "pointer-down":
             button = message.get("button", "left")
             pixels = normalize_to_pixels(
                 message["x"], message["y"], self._screen_width, self._screen_height
             )
             self._active_button = button
-            if button == "left" and self._touch_injector is not None:
-                self._touch_injector.down(*pixels)
-                self._touch_keepalive_pixels = pixels
-                self._schedule_touch_keepalive()
+            if button == "left" and self._mouse_injector is not None:
+                self._mouse_injector.down(*pixels)
             else:
                 self._mouse.position = pixels
                 self._mouse.press(_BUTTON_MAP[button])
@@ -151,10 +137,8 @@ class InputInjector:
             pixels = normalize_to_pixels(
                 message["x"], message["y"], self._screen_width, self._screen_height
             )
-            if self._active_button == "left" and self._touch_injector is not None:
-                self._touch_injector.move(*pixels)
-                self._touch_keepalive_pixels = pixels
-                self._schedule_touch_keepalive()
+            if self._active_button == "left" and self._mouse_injector is not None:
+                self._mouse_injector.move(*pixels)
             else:
                 self._mouse.position = pixels
         elif msg_type == "pointer-up":
@@ -163,15 +147,13 @@ class InputInjector:
                 message["x"], message["y"], self._screen_width, self._screen_height
             )
             try:
-                if button == "left" and self._touch_injector is not None:
-                    self._touch_injector.up(*pixels)
+                if button == "left" and self._mouse_injector is not None:
+                    self._mouse_injector.up(*pixels)
                 else:
                     self._mouse.position = pixels
                     self._mouse.release(_BUTTON_MAP[button])
             finally:
                 self._active_button = None
-                self._touch_keepalive_pixels = None
-                self._cancel_touch_keepalive()
         elif msg_type == "wheel":
             dx, dy = wheel_delta_to_scroll_units(message.get("deltaX", 0), message.get("deltaY", 0))
             self._mouse.scroll(dx, dy)
@@ -180,49 +162,8 @@ class InputInjector:
         elif msg_type == "key-up":
             self._keyboard.release(resolve_key(message["key"]))
 
-    def _schedule_touch_keepalive(self) -> None:
-        self._cancel_touch_keepalive()
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            # No running loop (e.g. a synchronous unit test, or a host
-            # process not driven by asyncio) -- keepalive is a no-op.
-            # In production HostPeerConnection always runs inside
-            # asyncio.run(), so this always succeeds there.
-            return
-        self._touch_keepalive_handle = loop.call_later(
-            TOUCH_KEEPALIVE_INTERVAL_SECONDS, self._touch_keepalive_tick
-        )
-
-    def _cancel_touch_keepalive(self) -> None:
-        if self._touch_keepalive_handle is not None:
-            self._touch_keepalive_handle.cancel()
-            self._touch_keepalive_handle = None
-
-    def _touch_keepalive_tick(self) -> None:
-        self._touch_keepalive_handle = None
-        if self._touch_keepalive_pixels is None or self._touch_injector is None:
-            return
-        try:
-            self._touch_injector.move(*self._touch_keepalive_pixels)
-        except RuntimeError:
-            # The contact this chain was keeping alive is gone, so there is
-            # nothing left to keep alive. Re-arming regardless produced an
-            # endless run of failing injections (GetLastError=87) that
-            # outlived the gesture -- and, worse, kept dragging pointer id 0
-            # back to a stale position while a *later* gesture was using it,
-            # so real drags oscillated between two points and Windows read
-            # them as flicks instead of a drag. Let the chain die; a real
-            # pointer-move or pointer-up starts a fresh one.
-            self._touch_keepalive_pixels = None
-            return
-        self._schedule_touch_keepalive()
-
     def close(self) -> None:
-        """Stop this injector for good. A new InputInjector is built per
-        peer connection and the host replaces that connection on every
-        peer-joined, so without this an injector discarded mid-gesture
-        keeps its keepalive chain running forever against a pointer id the
-        next connection is already using."""
-        self._touch_keepalive_pixels = None
-        self._cancel_touch_keepalive()
+        """No-op: kept so HostPeerConnection.close() can call it
+        unconditionally regardless of which injector backs this
+        instance. SendInput has no persistent contact/timer state to
+        tear down (unlike the old touch-injection keepalive chain)."""

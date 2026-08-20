@@ -56,15 +56,17 @@ from screentracker_host.input_injector import InputInjector
 
 @pytest.fixture
 def injector():
-    """Default fixture: TouchInjector constructs successfully, so
-    left-button pointer events route through it. Use the
-    `injector_no_touch` fixture below for the pynput-fallback cases."""
+    """Default fixture: sys.platform is win32, so left-button pointer
+    events route through a MouseInjector. Use `injector_no_mouse_injector`
+    below for the pynput-fallback cases."""
     with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
          patch("screentracker_host.input_injector.keyboard.Controller") as mock_keyboard_cls, \
          patch("screentracker_host.input_injector.sys.platform", "win32"), \
-         patch("screentracker_host.touch_injector.user32") as mock_user32:
-        mock_user32.InitializeTouchInjection.return_value = True
-        mock_user32.InjectTouchInput.return_value = True
+         patch("screentracker_host.mouse_injector.user32") as mock_user32:
+        mock_user32.SendInput.return_value = 1
+        mock_user32.GetSystemMetrics.side_effect = lambda metric: {
+            76: 0, 77: 0, 78: 1920, 79: 1080,
+        }[metric]
         mock_mouse = MagicMock()
         mock_keyboard = MagicMock()
         mock_mouse_cls.return_value = mock_mouse
@@ -74,11 +76,11 @@ def injector():
 
 
 @pytest.fixture
-def injector_no_touch():
+def injector_no_mouse_injector():
     """Fixture for the pynput-fallback path: sys.platform isn't win32,
-    so InputInjector never attempts to construct a TouchInjector at
+    so InputInjector never attempts to construct a MouseInjector at
     all, and every pointer path (left AND right) uses pynput -- this
-    is also representative of "TouchInjector construction failed"."""
+    is also representative of "MouseInjector construction failed"."""
     with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
          patch("screentracker_host.input_injector.keyboard.Controller") as mock_keyboard_cls, \
          patch("screentracker_host.input_injector.sys.platform", "linux"):
@@ -90,77 +92,58 @@ def injector_no_touch():
         yield instance, mock_mouse, mock_keyboard
 
 
-def _touch_contact(mock_user32):
-    """Reads back the POINTER_TOUCH_INFO most recently passed to the
-    mocked InjectTouchInput -- same technique test_touch_injector.py
-    uses."""
-    return mock_user32.InjectTouchInput.call_args[0][1].contents
+def _last_mouse_input(mock_user32):
+    """Reads back the INPUT struct most recently passed to the mocked
+    SendInput call."""
+    return mock_user32.SendInput.call_args[0][1].contents
 
 
-def test_left_pointer_down_goes_through_touch_injector(injector):
-    from screentracker_host.touch_injector import (
-        POINTER_FLAG_DOWN,
-        POINTER_FLAG_INCONTACT,
-        POINTER_FLAG_INRANGE,
-    )
+def test_left_pointer_down_goes_through_mouse_injector(injector):
+    from screentracker_host.mouse_injector import MOUSEEVENTF_LEFTDOWN
 
     instance, mock_mouse, _, mock_user32 = injector
 
     instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
 
-    contact = _touch_contact(mock_user32)
-    assert contact.pointerInfo.pointerFlags == (
-        POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
-    )
-    assert contact.pointerInfo.ptPixelLocation.x == 960
-    assert contact.pointerInfo.ptPixelLocation.y == 540
+    inp = _last_mouse_input(mock_user32)
+    assert inp.mi.dwFlags == MOUSEEVENTF_LEFTDOWN
     mock_mouse.press.assert_not_called()
 
 
-def test_left_pointer_move_goes_through_touch_injector_after_left_down(injector):
-    from screentracker_host.touch_injector import (
-        POINTER_FLAG_INCONTACT,
-        POINTER_FLAG_INRANGE,
-        POINTER_FLAG_UPDATE,
-    )
+def test_left_pointer_move_goes_through_mouse_injector_after_left_down(injector):
+    from screentracker_host.mouse_injector import MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_MOVE, MOUSEEVENTF_VIRTUALDESK
 
     instance, mock_mouse, _, mock_user32 = injector
 
     instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
     instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.9})
 
-    contact = _touch_contact(mock_user32)
-    assert contact.pointerInfo.pointerFlags == (
-        POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
-    )
-    assert contact.pointerInfo.ptPixelLocation.x == 192
-    assert contact.pointerInfo.ptPixelLocation.y == 972
+    inp = _last_mouse_input(mock_user32)
+    assert inp.mi.dwFlags == (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK)
     mock_mouse.press.assert_not_called()
 
 
-def test_left_pointer_up_goes_through_touch_injector_and_clears_active_button(injector):
-    from screentracker_host.touch_injector import POINTER_FLAG_UP
+def test_left_pointer_up_goes_through_mouse_injector_and_clears_active_button(injector):
+    from screentracker_host.mouse_injector import MOUSEEVENTF_LEFTUP
 
     instance, mock_mouse, _, mock_user32 = injector
 
     instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
     instance.handle_message({"type": "pointer-up", "x": 0.25, "y": 0.75, "button": "left"})
 
-    contact = _touch_contact(mock_user32)
-    assert contact.pointerInfo.pointerFlags == POINTER_FLAG_UP
-    assert contact.pointerInfo.ptPixelLocation.x == 480
-    assert contact.pointerInfo.ptPixelLocation.y == 810
+    inp = _last_mouse_input(mock_user32)
+    assert inp.mi.dwFlags == MOUSEEVENTF_LEFTUP
     mock_mouse.release.assert_not_called()
 
     # A pointer-move after pointer-up (no active gesture) falls back to
     # the pynput path, proving _active_button was actually cleared.
-    call_count_before = mock_user32.InjectTouchInput.call_count
+    call_count_before = mock_user32.SendInput.call_count
     instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.1})
-    assert mock_user32.InjectTouchInput.call_count == call_count_before
+    assert mock_user32.SendInput.call_count == call_count_before
     assert mock_mouse.position == (192, 108)
 
 
-def test_right_pointer_down_still_uses_pynput_even_with_touch_injector_available(injector):
+def test_right_pointer_down_still_uses_pynput_even_with_mouse_injector_available(injector):
     from pynput.mouse import Button
 
     instance, mock_mouse, _, mock_user32 = injector
@@ -169,7 +152,7 @@ def test_right_pointer_down_still_uses_pynput_even_with_touch_injector_available
 
     mock_mouse.press.assert_called_once_with(Button.right)
     assert mock_mouse.position == (0, 0)
-    mock_user32.InjectTouchInput.assert_not_called()
+    mock_user32.SendInput.assert_not_called()
 
 
 def test_right_pointer_move_still_uses_pynput_after_right_down(injector):
@@ -179,7 +162,7 @@ def test_right_pointer_move_still_uses_pynput_after_right_down(injector):
     instance.handle_message({"type": "pointer-move", "x": 0.5, "y": 0.5})
 
     assert mock_mouse.position == (960, 540)
-    mock_user32.InjectTouchInput.assert_not_called()
+    mock_user32.SendInput.assert_not_called()
 
 
 def test_right_pointer_up_still_uses_pynput(injector):
@@ -192,7 +175,7 @@ def test_right_pointer_up_still_uses_pynput(injector):
 
     mock_mouse.release.assert_called_once_with(Button.right)
     assert mock_mouse.position == (480, 810)
-    mock_user32.InjectTouchInput.assert_not_called()
+    mock_user32.SendInput.assert_not_called()
 
 
 def test_wheel_still_scrolls_via_pynput(injector):
@@ -201,7 +184,7 @@ def test_wheel_still_scrolls_via_pynput(injector):
     instance.handle_message({"type": "wheel", "deltaX": 0, "deltaY": 200})
 
     mock_mouse.scroll.assert_called_once_with(0, -2)
-    mock_user32.InjectTouchInput.assert_not_called()
+    mock_user32.SendInput.assert_not_called()
 
 
 def test_key_down_still_presses_via_pynput(injector):
@@ -212,7 +195,7 @@ def test_key_down_still_presses_via_pynput(injector):
     instance.handle_message({"type": "key-down", "key": "Enter"})
 
     mock_keyboard.press.assert_called_once_with(Key.enter)
-    mock_user32.InjectTouchInput.assert_not_called()
+    mock_user32.SendInput.assert_not_called()
 
 
 def test_key_up_still_releases_via_pynput(injector):
@@ -221,7 +204,7 @@ def test_key_up_still_releases_via_pynput(injector):
     instance.handle_message({"type": "key-up", "key": "a"})
 
     mock_keyboard.release.assert_called_once_with("a")
-    mock_user32.InjectTouchInput.assert_not_called()
+    mock_user32.SendInput.assert_not_called()
 
 
 def test_unknown_message_type_is_ignored(injector):
@@ -231,7 +214,7 @@ def test_unknown_message_type_is_ignored(injector):
 
     mock_mouse.press.assert_not_called()
     mock_keyboard.press.assert_not_called()
-    mock_user32.InjectTouchInput.assert_not_called()
+    mock_user32.SendInput.assert_not_called()
 
 
 def test_exception_during_dispatch_is_caught_and_warned_once(injector, capsys):
@@ -239,55 +222,21 @@ def test_exception_during_dispatch_is_caught_and_warned_once(injector, capsys):
     mock_mouse.press.side_effect = RuntimeError("boom")
 
     # Use the right button so this exercises the pynput press() path
-    # (left goes through TouchInjector, which doesn't call mock_mouse.press).
+    # (left goes through MouseInjector, which doesn't call mock_mouse.press).
     instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "right"})
     instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "right"})
 
     captured = capsys.readouterr()
-    assert captured.out.count("Accessibility") == 1
+    assert captured.out.count("Input control failed to inject an event") == 1
 
 
-def test_left_pointer_down_falls_back_to_pynput_when_touch_injector_construction_fails():
-    with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
-         patch("screentracker_host.input_injector.keyboard.Controller"), \
-         patch("screentracker_host.input_injector.sys.platform", "win32"), \
-         patch("screentracker_host.touch_injector.user32") as mock_user32:
-        mock_user32.InitializeTouchInjection.return_value = False  # construction fails
-        mock_mouse = MagicMock()
-        mock_mouse_cls.return_value = mock_mouse
-
-        instance = InputInjector(screen_size=(1920, 1080))
-        instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-
-        assert mock_mouse.position == (960, 540)
-        mock_mouse.press.assert_called_once()
-        mock_user32.InjectTouchInput.assert_not_called()
-
-
-def test_left_pointer_down_uses_pynput_on_non_windows(injector_no_touch):
-    instance, mock_mouse, _ = injector_no_touch
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-
-    assert mock_mouse.position == (960, 540)
-    mock_mouse.press.assert_called_once()
-
-
-def test_build_touch_injector_survives_attribute_error_from_missing_touch_injection_api():
-    """Important #1: on a Windows build where InitializeTouchInjection
-    isn't a user32.dll export (older/embedded Windows), ctypes raises
-    AttributeError, not RuntimeError, the first time that attribute is
-    accessed. _build_touch_injector() must swallow that too and fall
-    back to pynput rather than let it propagate out of __init__ and
-    have HostPeerConnection kill ALL input control."""
+def test_left_pointer_down_falls_back_to_pynput_when_mouse_injector_construction_fails():
     with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
          patch("screentracker_host.input_injector.keyboard.Controller"), \
          patch("screentracker_host.input_injector.sys.platform", "win32"), \
          patch(
-             "screentracker_host.touch_injector.TouchInjector",
-             side_effect=AttributeError(
-                 "function 'InitializeTouchInjection' not found"
-             ),
+             "screentracker_host.input_injector.InputInjector._build_mouse_injector",
+             return_value=None,
          ):
         mock_mouse = MagicMock()
         mock_mouse_cls.return_value = mock_mouse
@@ -295,174 +244,85 @@ def test_build_touch_injector_survives_attribute_error_from_missing_touch_inject
         instance = InputInjector(screen_size=(1920, 1080))
         instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
 
-        assert instance._touch_injector is None
         assert mock_mouse.position == (960, 540)
         mock_mouse.press.assert_called_once()
 
 
-def test_pointer_up_clears_active_button_even_when_touch_injector_up_raises(injector):
-    """Important #2: if TouchInjector.up() raises (a real, designed-for
-    failure mode -- InjectTouchInput can return false), _active_button
+def test_left_pointer_down_uses_pynput_on_non_windows(injector_no_mouse_injector):
+    instance, mock_mouse, _ = injector_no_mouse_injector
+
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+    assert mock_mouse.position == (960, 540)
+    mock_mouse.press.assert_called_once()
+
+
+def test_build_mouse_injector_survives_exceptions_from_construction():
+    """_build_mouse_injector() must swallow any construction error (a
+    missing user32.dll export on some unusual Windows build, etc.) and
+    fall back to pynput rather than let it propagate out of __init__
+    and have HostPeerConnection kill ALL input control."""
+    with patch("screentracker_host.input_injector.mouse.Controller") as mock_mouse_cls, \
+         patch("screentracker_host.input_injector.keyboard.Controller"), \
+         patch("screentracker_host.input_injector.sys.platform", "win32"), \
+         patch(
+             "screentracker_host.mouse_injector.MouseInjector",
+             side_effect=OSError("user32.dll not usable"),
+         ):
+        mock_mouse = MagicMock()
+        mock_mouse_cls.return_value = mock_mouse
+
+        instance = InputInjector(screen_size=(1920, 1080))
+        instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+
+        assert instance._mouse_injector is None
+        assert mock_mouse.position == (960, 540)
+        mock_mouse.press.assert_called_once()
+
+
+def test_pointer_up_clears_active_button_even_when_mouse_injector_up_raises(injector):
+    """If MouseInjector.up() raises (SendInput can fail), _active_button
     must still be cleared, otherwise every subsequent bare pointer-move
-    keeps trying to route through the (possibly broken) touch injector
+    keeps trying to route through the (possibly broken) mouse injector
     forever and never falls back to pynput."""
     instance, mock_mouse, _, mock_user32 = injector
 
     instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
 
-    with patch.object(instance._touch_injector, "up", side_effect=RuntimeError("boom")):
+    with patch.object(instance._mouse_injector, "up", side_effect=RuntimeError("boom")):
         instance.handle_message({"type": "pointer-up", "x": 0.25, "y": 0.75, "button": "left"})
 
     assert instance._active_button is None
 
-    call_count_before = mock_user32.InjectTouchInput.call_count
+    call_count_before = mock_user32.SendInput.call_count
     instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.1})
-    assert mock_user32.InjectTouchInput.call_count == call_count_before
+    assert mock_user32.SendInput.call_count == call_count_before
     assert mock_mouse.position == (192, 108)
 
 
-@pytest.mark.asyncio
-async def test_left_pointer_down_schedules_touch_keepalive_when_loop_available(injector):
-    """Confirmed via real on-device testing: an injected touch contact
-    times out (GetLastError=1460 then 87 on every subsequent call) if
-    left idle for too long between injections -- observed with an
-    ~875ms gap between a pointer-down and its first pointer-move. A
-    keepalive timer must be scheduled on left pointer-down so the
-    contact never goes stale even if the client sends no further
-    pointer-move for a while (a deliberate slow drag, or a brief pause
-    mid-drag)."""
-    instance, _, _, _ = injector
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-
-    assert instance._touch_keepalive_handle is not None
-
-
-def test_touch_keepalive_tick_reinjects_last_known_position(injector):
-    from screentracker_host.touch_injector import POINTER_FLAG_INCONTACT, POINTER_FLAG_INRANGE, POINTER_FLAG_UPDATE
-
-    instance, _, _, mock_user32 = injector
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-    call_count_before = mock_user32.InjectTouchInput.call_count
-
-    instance._touch_keepalive_tick()
-
-    assert mock_user32.InjectTouchInput.call_count == call_count_before + 1
-    contact = _touch_contact(mock_user32)
-    assert contact.pointerInfo.pointerFlags == (
-        POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT
-    )
-    assert contact.pointerInfo.ptPixelLocation.x == 960
-    assert contact.pointerInfo.ptPixelLocation.y == 540
-
-
-def test_touch_keepalive_tick_uses_latest_position_after_a_real_move(injector):
-    instance, _, _, mock_user32 = injector
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-    instance.handle_message({"type": "pointer-move", "x": 0.1, "y": 0.9})
-
-    instance._touch_keepalive_tick()
-
-    contact = _touch_contact(mock_user32)
-    assert contact.pointerInfo.ptPixelLocation.x == 192
-    assert contact.pointerInfo.ptPixelLocation.y == 972
-
-
-def test_touch_keepalive_tick_is_a_no_op_after_pointer_up(injector):
-    instance, _, _, mock_user32 = injector
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-    instance.handle_message({"type": "pointer-up", "x": 0.5, "y": 0.5, "button": "left"})
-    call_count_before = mock_user32.InjectTouchInput.call_count
-
-    instance._touch_keepalive_tick()
-
-    assert mock_user32.InjectTouchInput.call_count == call_count_before
-
-
-@pytest.mark.asyncio
-async def test_pointer_up_cancels_pending_touch_keepalive(injector):
-    instance, _, _, _ = injector
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-    assert instance._touch_keepalive_handle is not None
-
-    instance.handle_message({"type": "pointer-up", "x": 0.5, "y": 0.5, "button": "left"})
-
-    assert instance._touch_keepalive_handle is None
-
-
-@pytest.mark.asyncio
-async def test_touch_keepalive_fires_on_its_own_via_the_real_event_loop_timer(injector):
-    """Proves the scheduled callback actually re-arms itself and
-    executes through a live event loop -- not just that a handle gets
-    created (test_left_pointer_down_schedules_touch_keepalive_when_loop_available)
-    or that the tick method works when called directly
-    (test_touch_keepalive_tick_reinjects_last_known_position)."""
-    import asyncio
-
-    from screentracker_host.input_injector import TOUCH_KEEPALIVE_INTERVAL_SECONDS
-
-    instance, _, _, mock_user32 = injector
-
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-    call_count_before = mock_user32.InjectTouchInput.call_count
-
-    await asyncio.sleep(TOUCH_KEEPALIVE_INTERVAL_SECONDS * 2)
-
-    assert mock_user32.InjectTouchInput.call_count > call_count_before
-
-
-def test_host_peer_connection_survives_touch_injector_construction_failure_message():
+def test_host_peer_connection_survives_mouse_injector_construction_failure_message():
     """The fallback message is printed (not silently swallowed) so a
     developer reading host app logs can see why drag-and-drop won't
     work correctly on this host."""
     with patch("screentracker_host.input_injector.mouse.Controller"), \
          patch("screentracker_host.input_injector.keyboard.Controller"), \
          patch("screentracker_host.input_injector.sys.platform", "win32"), \
-         patch("screentracker_host.touch_injector.user32") as mock_user32, \
+         patch(
+             "screentracker_host.mouse_injector.MouseInjector",
+             side_effect=OSError("user32.dll not usable"),
+         ), \
          patch("builtins.print") as mock_print:
-        mock_user32.InitializeTouchInjection.return_value = False
-
         InputInjector(screen_size=(1920, 1080))
 
         assert any(
-            "Touch injection unavailable" in str(call.args[0])
+            "Mouse injection unavailable" in str(call.args[0])
             for call in mock_print.call_args_list
         )
 
 
-@pytest.mark.asyncio
-async def test_touch_keepalive_stops_re_arming_once_injection_starts_failing(injector):
-    """Observed on-device: a keepalive chain whose contact no longer
-    exists kept re-arming forever, injecting thousands of failing
-    updates (GetLastError=87). The failure was swallowed and the timer
-    re-scheduled regardless, so the chain could never die."""
-    instance, _, _, mock_user32 = injector
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
-
-    mock_user32.InjectTouchInput.return_value = 0  # the contact is gone
-
-    instance._touch_keepalive_tick()
-
-    assert instance._touch_keepalive_handle is None
-
-
-@pytest.mark.asyncio
-async def test_close_stops_a_discarded_injector_from_injecting_forever(injector):
-    """A new InputInjector is built per peer connection, and the host
-    replaces the peer connection on every peer-joined. Without an
-    explicit stop, a mid-gesture injector outlives its connection and
-    its keepalive keeps yanking pointer id 0 back to a stale position,
-    fighting the live gesture."""
-    instance, _, _, mock_user32 = injector
-    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "left"})
+def test_close_is_safe_to_call_even_without_an_active_gesture(injector):
+    """close() must not raise regardless of gesture state -- it's called
+    unconditionally by HostPeerConnection.close()."""
+    instance, _, _, _ = injector
 
     instance.close()
-
-    assert instance._touch_keepalive_handle is None
-    calls_before = mock_user32.InjectTouchInput.call_count
-    instance._touch_keepalive_tick()
-    assert mock_user32.InjectTouchInput.call_count == calls_before
