@@ -326,3 +326,24 @@ def test_close_is_safe_to_call_even_without_an_active_gesture(injector):
     instance, _, _, _ = injector
 
     instance.close()
+
+
+def test_normalize_to_pixels_defaults_offset_to_zero():
+    assert normalize_to_pixels(0.5, 0.25, 1920, 1080) == (960, 270)
+
+
+def test_normalize_to_pixels_applies_offset():
+    # A second monitor sitting to the right of a 1920-wide primary monitor.
+    assert normalize_to_pixels(0.5, 0.25, 1920, 1080, offset_x=1920, offset_y=0) == (2880, 270)
+
+
+def test_update_screen_changes_subsequent_pointer_mapping(injector):
+    instance, mock_mouse, _, _ = injector
+
+    instance.update_screen(width=1920, height=1080, left=1920, top=0)
+    # Right button: goes straight through pynput's `self._mouse.position =
+    # pixels`, so the exact mapped pixel is directly assertable (unlike the
+    # left-button path, which goes through the mocked SendInput conversion).
+    instance.handle_message({"type": "pointer-down", "x": 0.5, "y": 0.5, "button": "right"})
+
+    assert mock_mouse.position == (2880, 540)

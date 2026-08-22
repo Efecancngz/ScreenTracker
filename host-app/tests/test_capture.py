@@ -237,3 +237,68 @@ def test_capture_raises_if_the_recreated_context_also_fails():
 
     assert raised
     assert mock_mss_cls.call_count == 2
+
+
+def test_list_monitors_excludes_the_synthetic_all_monitors_entry():
+    with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
+        mock_sct = MagicMock()
+        mock_sct.monitors = [
+            {"left": 0, "top": 0, "width": 3200, "height": 1080},  # index 0: synthetic combined
+            {"left": 0, "top": 0, "width": 1920, "height": 1080},
+            {"left": 1920, "top": 0, "width": 1280, "height": 1080},
+        ]
+        mock_mss_cls.return_value.__enter__.return_value = mock_sct
+
+        from screentracker_host.capture import list_monitors
+
+        monitors = list_monitors()
+
+    assert monitors == [
+        {"index": 1, "width": 1920, "height": 1080, "left": 0, "top": 0},
+        {"index": 2, "width": 1280, "height": 1080, "left": 1920, "top": 0},
+    ]
+
+
+def test_list_monitors_returns_single_entry_for_a_single_monitor_host():
+    with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
+        mock_sct = MagicMock()
+        mock_sct.monitors = [
+            {"left": 0, "top": 0, "width": 1920, "height": 1080},
+            {"left": 0, "top": 0, "width": 1920, "height": 1080},
+        ]
+        mock_mss_cls.return_value.__enter__.return_value = mock_sct
+
+        from screentracker_host.capture import list_monitors
+
+        monitors = list_monitors()
+
+    assert monitors == [{"index": 1, "width": 1920, "height": 1080, "left": 0, "top": 0}]
+
+
+def test_set_monitor_changes_which_monitor_the_next_capture_grabs():
+    with patch("screentracker_host.capture.mss.mss") as mock_mss_cls:
+        mock_sct = MagicMock()
+        width, height = 100, 50
+        mock_sct.monitors = [
+            None,
+            {"left": 0, "top": 0, "width": width, "height": height},
+            {"left": width, "top": 0, "width": width, "height": height},
+        ]
+        fake_raw = MagicMock()
+        fake_raw.width = width
+        fake_raw.height = height
+        mock_sct.grab.return_value = fake_raw
+        mock_mss_cls.return_value = mock_sct
+
+        with patch(
+            "screentracker_host.capture.np.array",
+            return_value=np.zeros((height, width, 4), dtype=np.uint8),
+        ), patch(
+            "screentracker_host.capture.cv2.cvtColor",
+            return_value=np.zeros((height, width, 3), dtype=np.uint8),
+        ):
+            capturer = ScreenCapturer()
+            capturer.set_monitor(2)
+            capturer.capture()
+
+    mock_sct.grab.assert_called_once_with(mock_sct.monitors[2])

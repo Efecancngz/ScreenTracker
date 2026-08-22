@@ -20,7 +20,7 @@ from aiortc import (
 from aiortc.sdp import candidate_from_sdp
 from av import VideoFrame
 
-from screentracker_host.capture import ScreenCapturer, get_monitor_size
+from screentracker_host.capture import ScreenCapturer, get_monitor_size, list_monitors
 from screentracker_host.input_injector import InputInjector
 
 # A public STUN server is enough for most NATs; TURN is the relay fallback for
@@ -46,6 +46,9 @@ class ScreenCaptureTrack(VideoStreamTrack):
         self._executor = ThreadPoolExecutor(max_workers=1)
         self._pts = 0
         self._next_frame_time = time.monotonic()
+
+    def set_monitor(self, index: int) -> None:
+        self._capturer.set_monitor(index)
 
     async def recv(self) -> VideoFrame:
         now = time.monotonic()
@@ -126,7 +129,8 @@ def parse_ice_candidate(candidate_init: dict[str, Any]) -> RTCIceCandidate | Non
 class HostPeerConnection:
     def __init__(self, screen_size: tuple[int, int] | None = None) -> None:
         self._pc = RTCPeerConnection(RTCConfiguration(iceServers=build_ice_servers()))
-        self._pc.addTrack(ScreenCaptureTrack())
+        self._track = ScreenCaptureTrack()
+        self._pc.addTrack(self._track)
 
         try:
             self._input_injector: InputInjector | None = InputInjector(
@@ -142,15 +146,61 @@ class HostPeerConnection:
 
         self._input_channel = self._pc.createDataChannel("input")
 
+        @self._input_channel.on("open")
+        def _on_input_channel_open() -> None:
+            self._send_monitor_list()
+
         @self._input_channel.on("message")
         def _on_input_message(message: str) -> None:
-            if self._input_injector is None:
-                return
             try:
                 payload = json.loads(message)
             except (ValueError, TypeError):
                 return
+            if payload.get("type") == "select-monitor":
+                self._handle_select_monitor(payload)
+                return
+            if payload.get("type") == "request-monitor-list":
+                self._send_monitor_list()
+                return
+            if self._input_injector is None:
+                return
             self._input_injector.handle_message(payload)
+
+    def _send_monitor_list(self) -> None:
+        """Build and send the monitor-list payload, degrading gracefully
+        instead of propagating.
+
+        list_monitors() constructs mss.mss() internally, which raises on a
+        host without a usable display (e.g. headless Linux). This handler
+        runs synchronously inside a pyee event callback, so an uncaught
+        exception here would propagate into aiortc's SCTP receive task and
+        can take down the whole data transport (and therefore video) --
+        strictly worse than simply not having the monitor list. send()
+        itself can also raise InvalidStateError if the channel closes
+        between the triggering event and this call.
+        """
+        try:
+            monitors = list_monitors()
+            self._input_channel.send(json.dumps({"type": "monitor-list", "monitors": monitors}))
+        except Exception as exc:
+            print(f"monitor-list unavailable: {exc}. Screen viewing will still work.")
+
+    def _handle_select_monitor(self, payload: dict[str, Any]) -> None:
+        index = payload.get("index")
+        try:
+            monitors = list_monitors()
+        except Exception as exc:
+            print(f"select-monitor: monitor list unavailable ({exc}), ignoring")
+            return
+        monitor = next((m for m in monitors if m["index"] == index), None)
+        if monitor is None:
+            print(f"select-monitor: unknown monitor index {index!r}, ignoring")
+            return
+        self._track.set_monitor(index)
+        if self._input_injector is not None:
+            self._input_injector.update_screen(
+                monitor["width"], monitor["height"], monitor["left"], monitor["top"]
+            )
 
     async def create_offer(self) -> RTCSessionDescription:
         offer = await self._pc.createOffer()
