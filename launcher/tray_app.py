@@ -14,6 +14,7 @@ import ctypes
 import logging
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -65,23 +66,44 @@ def signaling_server_argv(env: dict[str, str]) -> list[str]:
     return [sys.executable, "-m", "uvicorn", "app.main:app", "--host", host, "--port", port]
 
 
-def viewer_url_from_signaling_url(signaling_server_url: str) -> str | None:
-    """Derive the URL to open in a browser from the host app's
-    SIGNALING_SERVER_URL (e.g. "ws://100.106.113.59:8000/ws" ->
-    "http://100.106.113.59:8000/"). The viewer is served by the signaling
-    server itself, on the same host and port, at "/" instead of "/ws"."""
-    if signaling_server_url.startswith("wss://"):
-        rest = signaling_server_url[len("wss://") :]
-        scheme = "https://"
-    elif signaling_server_url.startswith("ws://"):
-        rest = signaling_server_url[len("ws://") :]
-        scheme = "http://"
-    else:
+def build_viewer_url(ip: str, port: str) -> str:
+    """The viewer is served by the signaling server itself, on the same
+    host and port, at "/"."""
+    return f"http://{ip}:{port}/"
+
+
+def detect_lan_ip() -> str | None:
+    """Best-effort local LAN IP: ask the OS which local interface it would
+    route a packet through to reach the public internet. Nothing is
+    actually sent — UDP "connect" just picks a route. Returns None if the
+    machine has no outbound route at all (e.g. fully offline)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.settimeout(1.0)
+            probe.connect(("8.8.8.8", 80))
+            return probe.getsockname()[0]
+    except OSError:
         return None
-    host = rest.split("/", 1)[0]
-    if not host:
+
+
+def detect_tailscale_ip() -> str | None:
+    """Best-effort Tailscale IPv4 address via the `tailscale` CLI. Returns
+    None whenever Tailscale isn't installed, isn't running, or the command
+    otherwise fails — it's an optional extra address, never required."""
+    try:
+        result = subprocess.run(
+            ["tailscale", "ip", "-4"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            **_POPEN_KWARGS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return None
-    return f"{scheme}{host}/"
+    if result.returncode != 0:
+        return None
+    ip = result.stdout.strip()
+    return ip or None
 
 
 def host_app_argv() -> list[str]:
@@ -179,9 +201,12 @@ class TrayApp:
         self._env = load_env_file(ENV_PATH)
         self._session_code: str | None = None
         self._icon: pystray.Icon | None = None
-        self._viewer_url = viewer_url_from_signaling_url(
-            self._env.get("SIGNALING_SERVER_URL", "")
-        )
+
+        port = self._env.get("SIGNALING_SERVER_PORT", "8000")
+        lan_ip = detect_lan_ip()
+        tailscale_ip = detect_tailscale_ip()
+        self._lan_url = build_viewer_url(lan_ip, port) if lan_ip else None
+        self._tailscale_url = build_viewer_url(tailscale_ip, port) if tailscale_ip else None
 
         self._signaling = ManagedProcess(
             name="signaling-server",
@@ -210,8 +235,13 @@ class TrayApp:
             self._session_code = code
             if self._icon is not None:
                 self._icon.update_menu()
-            if self._viewer_url:
-                self._notify(f"{self._viewer_url}  —  code {code}")
+            urls = []
+            if self._lan_url:
+                urls.append(f"LAN: {self._lan_url}")
+            if self._tailscale_url:
+                urls.append(f"Tailscale: {self._tailscale_url}")
+            if urls:
+                self._notify("\n".join(urls) + f"\n\ncode {code}")
             else:
                 self._notify(f"Session code: {code}")
 
@@ -226,8 +256,11 @@ class TrayApp:
     def _code_label(self, _item: object) -> str:
         return f"Code: {self._session_code}" if self._session_code else "Starting…"
 
-    def _url_label(self, _item: object) -> str:
-        return self._viewer_url or "URL: unknown (check SIGNALING_SERVER_URL in .env)"
+    def _lan_url_label(self, _item: object) -> str:
+        return f"LAN: {self._lan_url}" if self._lan_url else "LAN URL: not detected"
+
+    def _tailscale_url_label(self, _item: object) -> str:
+        return f"Tailscale: {self._tailscale_url}" if self._tailscale_url else "Tailscale URL: not detected"
 
     def _copy_code(self, _icon: pystray.Icon, _item: object) -> None:
         if not self._session_code:
@@ -238,14 +271,23 @@ class TrayApp:
         except Exception:
             logging.exception("Failed to copy session code to clipboard")
 
-    def _copy_url(self, _icon: pystray.Icon, _item: object) -> None:
-        if not self._viewer_url:
+    def _copy_lan_url(self, _icon: pystray.Icon, _item: object) -> None:
+        if not self._lan_url:
             return
         try:
-            subprocess.run(["clip"], input=self._viewer_url.encode(), check=True)
-            self._notify("Viewer URL copied to clipboard.")
+            subprocess.run(["clip"], input=self._lan_url.encode(), check=True)
+            self._notify("LAN viewer URL copied to clipboard.")
         except Exception:
-            logging.exception("Failed to copy viewer URL to clipboard")
+            logging.exception("Failed to copy LAN viewer URL to clipboard")
+
+    def _copy_tailscale_url(self, _icon: pystray.Icon, _item: object) -> None:
+        if not self._tailscale_url:
+            return
+        try:
+            subprocess.run(["clip"], input=self._tailscale_url.encode(), check=True)
+            self._notify("Tailscale viewer URL copied to clipboard.")
+        except Exception:
+            logging.exception("Failed to copy Tailscale viewer URL to clipboard")
 
     def _new_session(self, _icon: pystray.Icon, _item: object) -> None:
         """Drop the current viewer (if any) and issue a fresh session code —
@@ -270,9 +312,11 @@ class TrayApp:
 
     def _build_menu(self) -> pystray.Menu:
         return pystray.Menu(
-            pystray.MenuItem(self._url_label, None, enabled=False),
+            pystray.MenuItem(self._lan_url_label, None, enabled=False),
+            pystray.MenuItem(self._tailscale_url_label, None, enabled=False),
             pystray.MenuItem(self._code_label, None, enabled=False),
-            pystray.MenuItem("Copy viewer URL", self._copy_url),
+            pystray.MenuItem("Copy LAN URL", self._copy_lan_url),
+            pystray.MenuItem("Copy Tailscale URL", self._copy_tailscale_url),
             pystray.MenuItem("Copy code", self._copy_code),
             pystray.MenuItem("New session", self._new_session),
             pystray.Menu.SEPARATOR,

@@ -1,13 +1,17 @@
+import subprocess
 import sys
 import time
+from unittest.mock import MagicMock, patch
 
 from tray_app import (
     ManagedProcess,
+    build_viewer_url,
+    detect_lan_ip,
+    detect_tailscale_ip,
     host_app_argv,
     load_env_file,
     parse_session_code,
     signaling_server_argv,
-    viewer_url_from_signaling_url,
 )
 
 
@@ -21,7 +25,7 @@ def test_load_env_file_skips_blank_and_comment_lines(tmp_path):
                 "SIGNALING_SERVER_PORT=8000",
                 "",
                 "# Host app",
-                "SIGNALING_SERVER_URL=ws://100.106.113.59:8000/ws",
+                "SIGNALING_SERVER_URL=ws://100.64.1.2:8000/ws",
                 "#TURN_SERVER_URL=turn:example:3478",
             ]
         ),
@@ -33,7 +37,7 @@ def test_load_env_file_skips_blank_and_comment_lines(tmp_path):
     assert values == {
         "SIGNALING_SERVER_HOST": "0.0.0.0",
         "SIGNALING_SERVER_PORT": "8000",
-        "SIGNALING_SERVER_URL": "ws://100.106.113.59:8000/ws",
+        "SIGNALING_SERVER_URL": "ws://100.64.1.2:8000/ws",
     }
 
 
@@ -60,20 +64,53 @@ def test_signaling_server_argv_defaults_when_env_missing():
     assert argv == [sys.executable, "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
-def test_viewer_url_from_signaling_url_ws():
-    assert viewer_url_from_signaling_url("ws://100.106.113.59:8000/ws") == "http://100.106.113.59:8000/"
+def test_build_viewer_url():
+    assert build_viewer_url("192.168.1.5", "8000") == "http://192.168.1.5:8000/"
 
 
-def test_viewer_url_from_signaling_url_wss():
-    assert viewer_url_from_signaling_url("wss://example.com:8000/ws") == "https://example.com:8000/"
+def test_detect_lan_ip_returns_none_when_no_route_is_available():
+    with patch("tray_app.socket.socket") as mock_socket_cls:
+        mock_socket = mock_socket_cls.return_value.__enter__.return_value
+        mock_socket.connect.side_effect = OSError
+        assert detect_lan_ip() is None
 
 
-def test_viewer_url_from_signaling_url_rejects_unknown_scheme():
-    assert viewer_url_from_signaling_url("http://example.com:8000/ws") is None
+def test_detect_lan_ip_returns_the_outbound_local_address():
+    with patch("tray_app.socket.socket") as mock_socket_cls:
+        mock_socket = mock_socket_cls.return_value.__enter__.return_value
+        mock_socket.getsockname.return_value = ("192.168.1.5", 54321)
+        assert detect_lan_ip() == "192.168.1.5"
 
 
-def test_viewer_url_from_signaling_url_rejects_empty_string():
-    assert viewer_url_from_signaling_url("") is None
+def test_detect_tailscale_ip_returns_stripped_stdout_on_success():
+    fake_result = MagicMock(returncode=0, stdout="100.106.113.59\n")
+    with patch("tray_app.subprocess.run", return_value=fake_result):
+        assert detect_tailscale_ip() == "100.106.113.59"
+
+
+def test_detect_tailscale_ip_returns_none_when_binary_is_missing():
+    with patch("tray_app.subprocess.run", side_effect=FileNotFoundError):
+        assert detect_tailscale_ip() is None
+
+
+def test_detect_tailscale_ip_returns_none_on_nonzero_exit():
+    fake_result = MagicMock(returncode=1, stdout="")
+    with patch("tray_app.subprocess.run", return_value=fake_result):
+        assert detect_tailscale_ip() is None
+
+
+def test_detect_tailscale_ip_returns_none_on_timeout():
+    with patch(
+        "tray_app.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="tailscale", timeout=3),
+    ):
+        assert detect_tailscale_ip() is None
+
+
+def test_detect_tailscale_ip_returns_none_on_blank_output():
+    fake_result = MagicMock(returncode=0, stdout="   \n")
+    with patch("tray_app.subprocess.run", return_value=fake_result):
+        assert detect_tailscale_ip() is None
 
 
 def test_host_app_argv():

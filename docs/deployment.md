@@ -1,5 +1,11 @@
 # Deployment
 
+**Using the daily-use launcher (`start.bat`)?** It already handles this for
+you — the tray icon auto-detects both a LAN address and a Tailscale address
+(if Tailscale is installed and running) and offers both to copy, no manual
+`.env` editing needed. The manual steps below only matter for the
+`start-dev.bat` / `npm run dev` workflow.
+
 ## Tailscale (recommended — tested)
 
 The simplest way to reach your PC from anywhere: install [Tailscale](https://tailscale.com)
@@ -14,8 +20,12 @@ router ports or deploying anything to the cloud.
    ```bash
    uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
-4. Set `SIGNALING_SERVER_URL` and `VITE_SIGNALING_SERVER_URL` in `.env` to your
-   Tailscale IP, e.g. `ws://100.x.y.z:8000/ws`.
+4. For manual/dev-server testing across networks, set
+   `VITE_SIGNALING_SERVER_URL` in `viewer-app/.env.development` (not the root
+   `.env` — that one is production-only) to your Tailscale IP, e.g.
+   `ws://100.x.y.z:8000/ws`. `SIGNALING_SERVER_URL` in the root `.env` should
+   stay `ws://localhost:8000/ws` — the host app always talks to the signaling
+   server locally, regardless of which address viewers use to reach it.
 5. Run the host app and the viewer app as usual (see the root `README.md`).
 6. On your phone, open the viewer app's address using your PC's Tailscale IP
    (e.g. `http://100.x.y.z:5173`) — this works over any network your phone is on,
