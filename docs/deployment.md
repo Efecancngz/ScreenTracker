@@ -24,8 +24,11 @@ router ports or deploying anything to the cloud.
    `VITE_SIGNALING_SERVER_URL` in `viewer-app/.env.development` (not the root
    `.env` — that one is production-only) to your Tailscale IP, e.g.
    `ws://100.x.y.z:8000/ws`. `SIGNALING_SERVER_URL` in the root `.env` should
-   stay `ws://localhost:8000/ws` — the host app always talks to the signaling
-   server locally, regardless of which address viewers use to reach it.
+   stay `ws://127.0.0.1:8000/ws` — the host app always talks to the signaling
+   server locally, regardless of which address viewers use to reach it. Use
+   `127.0.0.1`, not `localhost`: on Windows, `localhost` resolves to IPv6
+   `::1` first, which uvicorn's `0.0.0.0` binding never answers, so the
+   connection hangs until it times out instead of failing fast.
 5. Run the host app and the viewer app as usual (see the root `README.md`).
 6. On your phone, open the viewer app's address using your PC's Tailscale IP
    (e.g. `http://100.x.y.z:5173`) — this works over any network your phone is on,
