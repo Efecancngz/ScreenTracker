@@ -36,7 +36,7 @@ echo   Signaling server: %SIGNALING_SERVER_HOST%:%SIGNALING_SERVER_PORT%
 echo   Host app connects to: %SIGNALING_SERVER_URL%
 echo.
 
-start "ScreenTracker - Signaling Server" cmd /k "cd /d "%~dp0signaling-server" && uvicorn app.main:app --host %SIGNALING_SERVER_HOST% --port %SIGNALING_SERVER_PORT%"
+start "ScreenTracker - Signaling Server" cmd /k "cd /d "%~dp0signaling-server" && python -m uvicorn app.main:app --host %SIGNALING_SERVER_HOST% --port %SIGNALING_SERVER_PORT%"
 
 REM Give the signaling server a moment to come up before the host app tries
 REM to connect to it.

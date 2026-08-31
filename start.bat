@@ -17,8 +17,17 @@ if not exist ".env" (
 
 where pythonw >nul 2>nul
 if errorlevel 1 (
-    echo pythonw was not found on PATH. Install Python from python.org
-    echo ^(it ships alongside python.exe^) and try again.
+    echo Python was not found on PATH.
+    echo Install it from https://www.python.org/downloads/ — on the first
+    echo installer screen, check "Add python.exe to PATH" — then try again.
+    pause
+    exit /b 1
+)
+
+where npm >nul 2>nul
+if errorlevel 1 (
+    echo Node.js was not found on PATH.
+    echo Install it from https://nodejs.org/ ^(LTS version^) and try again.
     pause
     exit /b 1
 )
@@ -27,6 +36,18 @@ python -c "import pystray, PIL" >nul 2>nul
 if errorlevel 1 (
     echo Installing launcher dependencies ^(pystray, Pillow^)...
     python -m pip install -r "%~dp0launcher\requirements.txt"
+)
+
+python -c "import fastapi, uvicorn" >nul 2>nul
+if errorlevel 1 (
+    echo Installing signaling server dependencies — first run only, this can take a minute...
+    python -m pip install -r "%~dp0signaling-server\requirements.txt"
+)
+
+python -c "import aiortc, mss, pynput" >nul 2>nul
+if errorlevel 1 (
+    echo Installing host app dependencies — first run only, this can take a minute...
+    python -m pip install -r "%~dp0host-app\requirements.txt"
 )
 
 if not exist "viewer-app\dist\index.html" (

@@ -18,7 +18,7 @@ router ports or deploying anything to the cloud.
    system tray icon).
 3. Run the signaling server bound to all interfaces so Tailscale can reach it:
    ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
    ```
 4. For manual/dev-server testing across networks, set
    `VITE_SIGNALING_SERVER_URL` in `viewer-app/.env.development` (not the root
